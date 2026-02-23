@@ -1,0 +1,101 @@
+# bot_address = "0x267fB71b280FB34B278CedE84180a9A9037C941b"  # old
+# bot_address = "0x7C4BDA48bd4C9ac4FbcC60deEb66bf80d35705f0"  # deployed 2026-02-23 (cross-dex test)
+bot_address = "0x633a7eB9b8912b22f3616013F3153de687F96074"    # deployed with balance-tracking fix
+
+[chain]
+name = "avalanche-fork"
+chain_id = 43114
+https_url = "http://127.0.0.1:8545"
+wss_url = "ws://127.0.0.1:8545"
+wss_urls = []
+cache_dir = "avax"
+# Output cap: 10=1x, 20=2x, 50=5x. Real arb is ~1.001-1.02x; dust fakes are ~235,000x.
+max_profit_pct = 50.0
+# Tokens to skip during path generation (scam / honeypot contracts)
+blacklisted_tokens = [
+  "0x9469603F3Efbcf17e4A5868d81C701BDbD222555",  # known scam token on AVAX
+]
+
+
+[[start_tokens]]
+symbol = "WAVAX"
+address = "0xb31f66aa3c1e785363f0875a1b74e27b85fd66c7"
+decimals = 18
+
+[[start_tokens]]
+symbol = "USDC"
+address = "0xb97ef9ef8734c71904d8002f8b6bc66dd9c48a6e"
+decimals = 6
+
+[[start_tokens]]
+symbol = "USDT"
+address = "0x9702230a8ea53601f5cd2dc00fdbc13d4df4a8c7"
+decimals = 6
+
+[[start_tokens]]
+symbol = "BTC.b"
+address = "0x152b9d0fdc40c096757f570a51e494bd4b943e50"
+decimals = 8
+
+[dexes.v2]
+enabled = true
+factories = ["0xfe926062fb99ca5653080d6c14fe945ad68c265c"]  # Blackhole V2 factory
+routers = ["0x04E1dee021Cd12bBa022A72806441B43d8212Fec"]
+from_blocks = [64928028]
+# fee_bps removed — each pool's fee is read live from the factory (getFee) and stored per-row in the CSV.
+direct_pair = true  # Use pair contract directly (no router CREATE2 lookup)
+# Pharaoh volatile pools populated via: python scripts/pull_pharaoh_pools.py --config-path config/avax.toml
+
+[dexes.v3]
+enabled = false
+factories = []
+routers = []
+quoter = ""
+fee_tiers = [100, 500, 3000, 10000]
+
+[dexes.algebra]
+enabled = true
+factories = ["0x512eb749541B7cf294be882D636218c84a5e9E5F"]
+routers = ["0xaBfc48e8BED7b26762745f3139555F320119709d"]
+quoter = "0x3e182bcf14Be6142b9217847ec1112e3c39Eb689"
+
+[dexes.uniswapv3cl]
+enabled = true
+factory = "0xAE6E5c62328ade73ceefD42228528b70c8157D0d"
+router  = "0xc8B8fCbDb5C019D7802fFb0b39603395D7d3915c"
+quoter  = "0xAdAe75447D112cfC401C952744de3E6d32456465"
+
+[gas]
+enabled = true
+token_symbol = "WAVAX"
+token_address = "0xb31f66aa3c1e785363f0875a1b74e27b85fd66c7"
+token_decimals = 18
+stable_symbol = "USDC"
+stable_address = "0xb97ef9ef8734c71904d8002f8b6bc66dd9c48a6e"
+stable_decimals = 6
+pool_address = "0xa02ec3ba8d17887567672b2cdcaf525534636ea0"
+token_is_token0 = false
+
+[aave_v3]
+pool = "0x794a61358D6845594F94dc1DB02A252b5b4814aD"
+pool_addresses_provider = "0xa97684ead0e402dC232d5A977953DF7ECBaB3CDb"
+oracle = "0xEBd36016B3eD09D4693Ed4251c67Bd858c3c7C9C"
+data_provider = "0x243Aa95cAC2a25651eda86e80bEe66114413c43b"
+allowed_assets = [
+  "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",  # WAVAX
+  "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",  # USDC
+  "0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7",  # USDT
+  "0x152b9d0fdc40c096757f570a51e494bd4b943e50"   # BTC.b
+]
+
+[execution]
+enabled = true
+min_profit_threshold = 0.001  # $0.001 minimum — captures any real cross-dex spread on fork
+max_position_size = 100000000.0
+use_flashloan = true
+default_flashloan_provider = "AaveV3"
+max_priority_fee_gwei = 2
+max_base_fee_gwei = 100
+simulation_required = true
+estimated_gas = 550000  # Estimated gas units per arb transaction
+balancer_vault = "0xBA12222222228d8Ba445958a75a0704d566BF2C8"  # Balancer V2 Vault (AVAX)

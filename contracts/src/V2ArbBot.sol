@@ -1,0 +1,522 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.13;
+
+import "openzeppelin-contracts/token/ERC20/IERC20.sol";
+import "openzeppelin-contracts/token/ERC20/utils/SafeERC20.sol";
+
+import "./interface/IWETH.sol";
+import "./interface/IUniswapV2.sol";
+import "./interface/IBalancer.sol";
+import "./interface/IAaveV3.sol";
+import "./interface/IAlgebraPool.sol";
+import "./interface/IRamsesV3Pool.sol";
+
+/// @dev Minimal extension of IERC20 to access decimals() for stable AMM math.
+interface IERC20Extended is IERC20 {
+    function decimals() external view returns (uint8);
+}
+
+contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleReceiver, IRamsesV3SwapCallback {
+    // can perform flashloan, multihop swaps in Uniswap V2 variant pools
+    using SafeERC20 for IERC20;
+
+    address public immutable owner;
+    IWETH public immutable mainCurrency;
+    mapping(address => bool) public allowedFlashAssets;
+
+    receive() external payable {
+        // wrap on receive
+        mainCurrency.deposit{value: msg.value}();
+    }
+
+    constructor(address _owner, address _mainCurrency) {
+        // mainCurrency on Ethereum is WETH
+        // mainCurrency on Polygon is WMATIC
+        owner = _owner;
+        mainCurrency = IWETH(_mainCurrency);
+    }
+
+    function setAllowedFlashAsset(address asset, bool allowed) external {
+        require(msg.sender == owner, "not owner");
+        allowedFlashAssets[asset] = allowed;
+    }
+
+    function recoverToken(address token) public payable {
+        require(msg.sender == owner, "not owner");
+        IERC20(token).safeTransfer(
+            msg.sender,
+            IERC20(token).balanceOf(address(this)) - 1
+        );
+    }
+
+    function approveRouter(
+        address router,
+        address[] memory tokens,
+        bool force
+    ) public {
+        require(msg.sender == owner, "not owner");
+        // skip approval if it already has allowance and if force is false
+        uint maxInt = type(uint256).max;
+
+        uint tokensLength = tokens.length;
+
+        for (uint i; i < tokensLength; ) {
+            IERC20 token = IERC20(tokens[i]);
+            uint allowance = token.allowance(address(this), router);
+            if (allowance < (maxInt / 2) || force) {
+                token.safeApprove(router, maxInt);
+            }
+
+            unchecked {
+                i++;
+            }
+        }
+    }
+
+    function _swapV2Pair(
+        address pairAddr,
+        address tokenIn,
+        address tokenOut,
+        uint amountIn,
+        uint feeBps
+    ) internal returns (uint amountOut) {
+        IUniswapV2Pair pair = IUniswapV2Pair(pairAddr);
+        (uint112 r0, uint112 r1, ) = pair.getReserves();
+        address token0 = pair.token0();
+
+        uint reserveIn = tokenIn == token0 ? uint(r0) : uint(r1);
+        uint reserveOut = tokenIn == token0 ? uint(r1) : uint(r0);
+
+        // Dynamic fee: base = 10000 - feeBps (e.g. 9929 for Blackhole 71 bps, 9700 for std V2 300 bps)
+        uint base = 10000 - feeBps;
+        uint amountInWithFee = amountIn * base;
+        uint numerator = amountInWithFee * reserveOut;
+        uint denominator = (reserveIn * 10000) + amountInWithFee;
+        uint amountExpected = numerator / denominator;
+
+        // Snapshot tokenOut balance before the swap so we can measure actual receipt.
+        // Some V2 variants (e.g. Blackhole) deduct a protocol fee from the output,
+        // meaning the bot receives less than amountExpected.  Using the delta ensures
+        // the next hop never tries to spend more than what was actually received.
+        uint balanceBefore = IERC20(tokenOut).balanceOf(address(this));
+
+        IERC20(tokenIn).safeTransfer(address(pair), amountIn);
+
+        if (tokenIn == token0) {
+            pair.swap(0, amountExpected, address(this), new bytes(0));
+        } else {
+            pair.swap(amountExpected, 0, address(this), new bytes(0));
+        }
+
+        // Actual received amount (may be less than amountExpected due to protocol fees)
+        amountOut = IERC20(tokenOut).balanceOf(address(this)) - balanceBefore;
+    }
+
+    function _swapAlgebraPool(
+        address poolAddr,
+        address tokenIn,
+        uint amountIn
+    ) internal returns (uint amountOut) {
+        IAlgebraPool pool = IAlgebraPool(poolAddr);
+        bool zeroToOne = (tokenIn == pool.token0());
+
+        uint160 limit = zeroToOne
+            ? 4295128740                                                    // MIN_SQRT_RATIO + 1 (Algebra MIN_SQRT_RATIO = 4295128739)
+            : 1461446703485210103287273052203988822378723970341;            // MAX_SQRT_RATIO - 1
+
+        (int256 delta0, int256 delta1) = pool.swap(
+            address(this),
+            zeroToOne,
+            int256(amountIn),
+            limit,
+            abi.encode(tokenIn, amountIn)
+        );
+
+        amountOut = uint256(zeroToOne ? -delta1 : -delta0);
+    }
+
+    // ── Solidly stable pair (x³y + xy³ = k) ─────────────────────────────────
+    // The swap() ABI is identical to Uniswap V2 — we just need to compute
+    // amountOut correctly on-chain using the Solidly invariant.
+    function _getAmountOutStable(
+        uint amountIn,
+        uint reserveIn,
+        uint reserveOut,
+        uint decimalsIn,
+        uint decimalsOut
+    ) internal pure returns (uint) {
+        // Scale reserves to 18-decimal precision
+        uint scaleIn  = 10 ** (18 - decimalsIn);
+        uint scaleOut = 10 ** (18 - decimalsOut);
+        uint x0 = reserveIn  * scaleIn;
+        uint y0 = reserveOut * scaleOut;
+        uint dx = amountIn   * scaleIn;
+        uint k  = x0 * y0 * (x0 * x0 + y0 * y0) / 1e36;  // k normalised to avoid overflow
+        uint x1 = x0 + dx;
+
+        // Newton-Raphson: solve y s.t. k(x1, y) == k, starting from y0
+        // f(y)  = x1*y*(x1²+y²) - k*1e36    (bring k back to raw scale)
+        // f'(y) = x1*(x1²+3*y²)
+        uint kRaw = x0 * y0 * (x0 * x0 + y0 * y0);  // original invariant
+        uint y = y0;
+        for (uint i; i < 255; ) {
+            uint y2 = y * y;
+            uint fVal  = x1 * y / 1e18 * (x1 * x1 / 1e18 + y2 / 1e18) / 1e18;  // normalised f
+            // simpler: use integer arithmetic keeping raw units
+            // f(y) = x1*y*(x1^2 + y^2) vs kRaw
+            uint fNum  = mulDiv(x1, y, 1e18);
+            uint fNum2 = mulDiv(fNum, x1 * x1 / 1e18 + y * y / 1e18, 1e18);
+            if (fNum2 >= kRaw / 1e18) {
+                uint excess = fNum2 - kRaw / 1e18;
+                uint fDer   = mulDiv(x1, x1 * x1 / 1e18 + 3 * y * y / 1e18, 1e18);
+                if (fDer == 0) break;
+                uint step = mulDiv(excess, 1e18, fDer);
+                if (step == 0) break;
+                y = y > step ? y - step : 0;
+            } else {
+                uint deficit = kRaw / 1e18 - fNum2;
+                uint fDer    = mulDiv(x1, x1 * x1 / 1e18 + 3 * y * y / 1e18, 1e18);
+                if (fDer == 0) break;
+                uint step = mulDiv(deficit, 1e18, fDer);
+                if (step == 0) break;
+                y = y + step;
+            }
+            unchecked { i++; }
+        }
+
+        uint dy = y0 > y ? y0 - y : 0;
+        return dy / scaleOut;
+    }
+
+    function mulDiv(uint a, uint b, uint denom) internal pure returns (uint) {
+        return (a * b) / denom;
+    }
+
+    function _swapSolidlyStablePair(
+        address pairAddr,
+        address tokenIn,
+        address tokenOut,
+        uint    amountIn,
+        uint    feeBps
+    ) internal returns (uint amountOut) {
+        IUniswapV2Pair pair = IUniswapV2Pair(pairAddr);
+        (uint112 r0, uint112 r1, ) = pair.getReserves();
+        address token0 = pair.token0();
+
+        bool zeroForOne = (tokenIn == token0);
+        uint reserveIn  = zeroForOne ? uint(r0) : uint(r1);
+        uint reserveOut = zeroForOne ? uint(r1) : uint(r0);
+
+        // Get decimals for stable AMM normalisation
+        uint dIn  = uint(IERC20Extended(tokenIn).decimals());
+        uint dOut = uint(IERC20Extended(tokenOut).decimals());
+
+        // Deduct fee before computing invariant (same as Solidly reference impl).
+        uint amountInWithFee = amountIn * (10000 - feeBps) / 10000;
+        amountOut = _getAmountOutStable(amountInWithFee, reserveIn, reserveOut, dIn, dOut);
+        require(amountOut > 0, "stable: zero out");
+
+        IERC20(tokenIn).safeTransfer(pairAddr, amountIn);
+
+        if (zeroForOne) {
+            pair.swap(0, amountOut, address(this), new bytes(0));
+        } else {
+            pair.swap(amountOut, 0, address(this), new bytes(0));
+        }
+    }
+
+    // ── Pharaoh CL / RamsesV3 (Uniswap V3 fork) ─────────────────────────────
+    function _swapRamsesV3Pool(
+        address poolAddr,
+        address tokenIn,
+        uint    amountIn
+    ) internal returns (uint amountOut) {
+        IRamsesV3Pool pool = IRamsesV3Pool(poolAddr);
+        bool zeroForOne = (tokenIn == pool.token0());
+
+        // Standard UniV3 price limits
+        uint160 limit = zeroForOne
+            ? 4295128740                                          // TickMath.MIN_SQRT_RATIO + 1
+            : 1461446703485210103287273052203988822378723970341;  // TickMath.MAX_SQRT_RATIO - 1
+
+        (int256 delta0, int256 delta1) = pool.swap(
+            address(this),
+            zeroForOne,
+            int256(amountIn),
+            limit,
+            abi.encode(tokenIn, amountIn)
+        );
+
+        amountOut = uint256(zeroForOne ? -delta1 : -delta0);
+    }
+
+    /// @notice RamsesV3 swap callback — called by the pool to pull input tokens.
+    /// Named `uniswapV3SwapCallback` because RamsesV3 retains the Uniswap V3 ABI.
+    function uniswapV3SwapCallback(
+        int256 amount0Delta,
+        int256 amount1Delta,
+        bytes calldata data
+    ) external override {
+        (address tokenIn, ) = abi.decode(data, (address, uint256));
+        uint256 actualAmount = uint256(amount0Delta > 0 ? amount0Delta : amount1Delta);
+        IERC20(tokenIn).safeTransfer(msg.sender, actualAmount);
+    }
+
+    function _execute(bytes memory data) internal returns (uint amountOut) {
+        uint8 nhop;
+
+        assembly {
+            // Header : amountIn (32), flashloan (32), loanFrom (32) = 96 bytes (0x60)
+            // PathParam: router (32), tokenIn (32), tokenOut (32), poolType (32), fee (32) = 160 bytes (0xa0)
+            // nhop = (len - 0x60) / 0xa0
+
+            let len := mload(data)
+            nhop := div(sub(len, 0x60), 0xa0)
+
+            let offset := add(data, 0x20)
+            amountOut := mload(offset)
+        }
+
+        for (uint8 i; i < nhop; ) {
+            address router;
+            address tokenIn;
+            address tokenOut;
+            uint256 poolType;
+            uint256 feeBps;
+
+            assembly {
+                // data[0x20] = first byte after the length prefix
+                // header = 3 slots (0x60), so params start at data + 0x20 + 0x60 = data + 0x80
+                // each hop is 0xa0 bytes (5 slots)
+                let offset := add(data, 0x80)
+                offset := add(offset, mul(0xa0, i))
+
+                router   := mload(offset)
+                tokenIn  := mload(add(offset, 0x20))
+                tokenOut := mload(add(offset, 0x40))
+                poolType := mload(add(offset, 0x60))
+                feeBps   := mload(add(offset, 0x80))
+            }
+
+            // Logic to handle pool type
+            if (poolType == 1) {
+                // Algebra CL - call pool directly (bypass router)
+                // router field holds pool address; fee is handled internally by the pool
+                amountOut = _swapAlgebraPool(router, tokenIn, amountOut);
+            } else if (poolType == 2) {
+                // Solidly stable pair (x³y + xy³ = k) — same swap() ABI but different math.
+                // router field holds pair address; feeBps carries the pool fee.
+                amountOut = _swapSolidlyStablePair(router, tokenIn, tokenOut, amountOut, feeBps);
+            } else if (poolType == 3) {
+                // RamsesV3 / Pharaoh CL — Uniswap V3 fork.
+                // router field holds pool address; fee handled internally by the pool.
+                amountOut = _swapRamsesV3Pool(router, tokenIn, amountOut);
+            } else {
+                // V2 direct pair swap: `router` is the pair address
+                amountOut = _swapV2Pair(router, tokenIn, tokenOut, amountOut, feeBps);
+            }
+
+            unchecked {
+                i++;
+            }
+        }
+
+    }
+
+    function receiveFlashLoan(
+        IERC20[] memory tokens,
+        uint[] memory amounts,
+        uint[] memory,
+        bytes memory data
+    ) external override {
+        address vault;
+
+        assembly {
+            let offset := add(data, 0x20)
+            vault := mload(add(offset, 0x40))
+        }
+
+        require(msg.sender == vault, "not vault");
+
+        IERC20 token = tokens[0];
+        uint amountIn = amounts[0];
+
+        // we don't need any amountOut checks for this
+        // because if we can't pay back the loan, our function simply reverts
+        _execute(data);
+
+        // repay the amount borrowed from flashloan
+        token.transfer(vault, amountIn);
+    }
+
+    /// @notice Algebra swap callback - called by pool during swap to request input tokens
+    function algebraSwapCallback(
+        int256 amount0Delta,
+        int256 amount1Delta,
+        bytes calldata data
+    ) external {
+        // Decode only tokenIn from the callback data; use actual pool-computed delta
+        (address tokenIn, ) = abi.decode(data, (address, uint256));
+        // The pool tells us exactly how much it needs via the positive delta
+        uint256 actualAmount = uint256(amount0Delta > 0 ? amount0Delta : amount1Delta);
+        // Transfer the exact required amount to the pool
+        IERC20(tokenIn).safeTransfer(msg.sender, actualAmount);
+    }
+
+    function algebraSwapDirect(
+        address poolAddr,
+        address tokenIn,
+        address tokenOut,
+        uint256 amountIn
+    ) external returns (uint256 amountOut) {
+        require(msg.sender == owner, "not owner");
+        IAlgebraPool pool = IAlgebraPool(poolAddr);
+        address token0 = pool.token0();
+        bool zeroToOne = (tokenIn == token0);
+
+        uint160 limit = zeroToOne
+            ? 4295128740                                                    // MIN_SQRT_RATIO + 1
+            : 1461446703485210103287273052203988822378723970341;            // MAX_SQRT_RATIO - 1
+
+        bytes memory cbData = abi.encode(tokenIn, amountIn);
+
+        (int256 delta0, int256 delta1) = pool.swap(
+            address(this),
+            zeroToOne,
+            int256(amountIn),
+            limit,
+            cbData
+        );
+
+        amountOut = uint256(zeroToOne ? -delta1 : -delta0);
+    }
+
+    function executeOperation(
+        address asset,
+        uint256 amount,
+        uint256 premium,
+        address initiator,
+        bytes calldata params
+    ) external override returns (bool) {
+        // Aave V3 flashLoanSimple callback
+        require(initiator == address(this), "invalid initiator");
+        require(allowedFlashAssets[asset], "asset not allowed");
+
+        // Execute swaps using same calldata format as fallback
+        _execute(params);
+
+        uint256 repayAmount = amount + premium;
+        IERC20(asset).safeApprove(msg.sender, repayAmount);
+        return true;
+    }
+
+    function uniswapV2Call(
+        address sender,
+        uint amount0,
+        uint amount1,
+        bytes memory data
+    ) external override {
+        address loanPool;
+        address tokenIn;
+        uint256 feeBps;
+
+        assembly {
+            // Calldata layout (bytes memory data):
+            //   offset+0x00 = amountIn   (slot 0)
+            //   offset+0x20 = useLoan    (slot 1)
+            //   offset+0x40 = loanPool   (slot 2)
+            //   offset+0x60 = hop0.router   (slot 3)
+            //   offset+0x80 = hop0.tokenIn  (slot 4)  ← token we borrowed
+            //   offset+0xa0 = hop0.tokenOut (slot 5)
+            //   offset+0xc0 = hop0.poolType (slot 6)
+            //   offset+0xe0 = hop0.fee      (slot 7)  ← loan pool fee in bps
+            let offset := add(data, 0x20)
+            loanPool := mload(add(offset, 0x40))
+            tokenIn  := mload(add(offset, 0x80))
+            feeBps   := mload(add(offset, 0xe0))
+        }
+
+        require(msg.sender == loanPool, "not loanPool");
+        require(sender == address(this), "not sender");
+
+        // we don't need any amountOut checks for this
+        // because if we can't pay back the loan, our function simply reverts
+        _execute(data);
+
+        uint amountIn = amount0 == 0 ? amount1 : amount0;
+        // Dynamic V2 fee: repayFee = amountIn * feeBps / (10000 - feeBps) rounded up
+        // e.g. feeBps=71 (Blackhole) → repayFee = amountIn * 71 / 9929 + 1
+        //      feeBps=300 (std V2)   → repayFee = amountIn * 300 / 9700 + 1
+        uint repayFee = (amountIn * feeBps) / (10000 - feeBps) + 1;
+        uint repayAmount = amountIn + repayFee;
+
+        // repay the amount borrowed from flashloan: (amount + fee)
+        IERC20(tokenIn).transfer(loanPool, repayAmount);
+    }
+
+    fallback() external payable {
+        uint amountIn;
+        uint useLoan;
+        address loanPool;
+
+        address _owner = owner;
+
+        assembly {
+            // only the owner can call fallback
+            if iszero(eq(caller(), _owner)) {
+                revert(0, 0)
+            }
+
+            amountIn := calldataload(0x00)
+            useLoan := calldataload(0x20)
+            loanPool := calldataload(0x40)
+        }
+
+        if (useLoan != 0) {
+            address tokenBorrow;
+
+            assembly {
+                // the first tokenIn is the token we flashloan
+                tokenBorrow := calldataload(0x80)
+            }
+
+            if (useLoan == 1) {
+                // Balancer Flashloan
+                IERC20[] memory tokens = new IERC20[](1);
+                tokens[0] = IERC20(tokenBorrow);
+
+                uint[] memory amounts = new uint[](1);
+                amounts[0] = amountIn;
+
+                IBalancerVault(loanPool).flashLoan(
+                    IFlashLoanRecipient(address(this)),
+                    tokens,
+                    amounts,
+                    msg.data
+                );
+            } else if (useLoan == 2) {
+                // Uniswap V2 Flashswap
+                IUniswapV2Pair pool = IUniswapV2Pair(loanPool);
+                address token0 = pool.token0();
+                if (tokenBorrow == token0) {
+                    pool.swap(amountIn, 0, address(this), msg.data);
+                } else {
+                    pool.swap(0, amountIn, address(this), msg.data);
+                }
+            } else if (useLoan == 3) {
+                // Aave V3 Flashloan (flashLoanSimple)
+                require(allowedFlashAssets[tokenBorrow], "asset not allowed");
+                IAaveV3Pool(loanPool).flashLoanSimple(
+                    address(this),
+                    tokenBorrow,
+                    amountIn,
+                    msg.data,
+                    0
+                );
+            }
+        } else {
+            // perform swaps without flashloan
+            _execute(msg.data);
+        }
+    }
+}
