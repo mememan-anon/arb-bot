@@ -98,7 +98,7 @@ allowed_assets = [
 
 [execution]
 enabled = false       # Set to true only when you have a deployed V2ArbBot contract
-min_profit_threshold = 0.002  # Minimum net profit to log/execute (in start token, e.g. 0.002 WAVAX ≈ $0.06)
+min_profit_threshold = 0.15  # Minimum net profit to log/execute (in start token, e.g. 0.002 WAVAX ≈ $0.06)
 max_position_size = 100000000.0  # Maximum amount to trade in USD
 use_flashloan = true
 default_flashloan_provider = "AaveV3"  # Options: AaveV3, Balancer, UniswapV2
