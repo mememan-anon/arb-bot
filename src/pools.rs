@@ -1,4 +1,5 @@
 use crate::algebra::AlgebraPoolFull;
+use crate::lfj::LFJPoolInfo;
 use anyhow::Result;
 use cfmms::{
     dex::{Dex, DexVariant as CfmmsDexVariant},
@@ -19,6 +20,8 @@ pub enum PoolType {
     Algebra(AlgebraPoolFull),
     /// UniswapV3 CL (any V3 fork: Pharaoh, Ramses, Shadow, etc.) — slot0() ABI, ppm fee
     UniswapV3CL(AlgebraPoolFull),
+    /// LFJ Liquidity Book V2.1/V2.2 — bin-based AMM, simulated with aggregate reserves.
+    LFJ(LFJPoolInfo),
 }
 
 impl PoolType {
@@ -41,11 +44,17 @@ impl PoolType {
         matches!(self, PoolType::Algebra(_) | PoolType::UniswapV3CL(_))
     }
 
+    /// True for LFJ Liquidity Book pools.
+    pub fn is_lfj(&self) -> bool {
+        matches!(self, PoolType::LFJ(_))
+    }
+
     pub fn get_v2_decimals(&self) -> (u8, u8) {
         match self {
             PoolType::V2(pool) => (pool.decimals0, pool.decimals1),
             PoolType::Algebra(pool) => (pool.decimals0, pool.decimals1),
             PoolType::UniswapV3CL(pool) => (pool.decimals0, pool.decimals1),
+            PoolType::LFJ(pool) => (pool.decimals_x, pool.decimals_y),
         }
     }
 }

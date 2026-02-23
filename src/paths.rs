@@ -5,6 +5,7 @@ use crate::bundler::PathParam;
 use crate::multi::Reserve;
 use crate::pools::{AnyPool, DexVariant, PoolType, Pool};
 use crate::algebra::AlgebraPoolFull;
+use crate::lfj::{LFJPoolInfo, LFJState};
 use crate::concentrated_liquidity;
 use crate::simulator::{SolidlyStableSimulator, UniswapV2Simulator};
 
@@ -62,6 +63,7 @@ impl ArbPath {
         amount_in: U256,
         v2_reserves: &HashMap<H160, Reserve>,
         algebra_states: &HashMap<H160, AlgebraPoolFull>,
+        lfj_states: &HashMap<H160, LFJState>,
     ) -> Option<U256> {
         if self.nhop == 0 || self.nhop > 3 {
             return None;
@@ -145,6 +147,66 @@ impl ArbPath {
                          return None;
                      }
                 }
+                PoolType::LFJ(lp) => {
+                    // LFJ Liquidity Book — constant-sum bin simulation.
+                    //
+                    // Each bin has a FIXED price: p = (1 + bin_step/10000)^(active_id - 2^23).
+                    // Within a bin the AMM is constant-sum: amount_out = amount_in × p × (1-fee).
+                    // Output is capped at the available bin reserve (can't drain more than the bin holds).
+                    //
+                    // x·y=k on active-bin reserves is WRONG: when the bin is single-sided
+                    // (e.g. price just moved, reserve_x ≈ 0, reserve_y is large), x·y=k lets
+                    // a tiny input extract nearly all of reserve_y, creating fictitious 100%+ profits.
+                    if let Some(state) = lfj_states.get(&pool.address) {
+                        // Bin price in raw Y-per-X units.
+                        const BASE_ID: i64 = 8_388_608; // 2^23 — LFJ price centre
+                        let delta = (state.active_id as i64) - BASE_ID;
+                        // Clamp extreme deltas (practically < ±20000 for any real token pair).
+                        let delta_i32 = delta.clamp(-100_000, 100_000) as i32;
+                        let price_f64 = (1.0_f64 + lp.bin_step as f64 / 10_000.0).powi(delta_i32);
+
+                        // Guard against NaN / infinity (can occur for extreme bin_step + delta).
+                        if !price_f64.is_finite() || price_f64 <= 0.0 {
+                            return None;
+                        }
+
+                        // Scale price to a u64 integer for U256 arithmetic.
+                        const PRICE_SCALE: u64 = 1_000_000_000; // 1e9 — plenty of precision
+                        // Use f64 → u128 cast to avoid u64 saturation/overflow before we get to U256.
+                        let price_scaled_u128 = (price_f64 * PRICE_SCALE as f64) as u128;
+                        if price_scaled_u128 == 0 {
+                            return None;
+                        }
+                        let fee_factor = 10_000u32.saturating_sub(lp.base_fee_bps);
+
+                        let amount_out = if zero_for_one {
+                            // X → Y: amount_out_Y = amount_in_X × price × (1 - fee)
+                            // Divisor: PRICE_SCALE * 10_000 — fits safely in u64.
+                            let out = amount
+                                .checked_mul(U256::from(price_scaled_u128))?
+                                .checked_mul(U256::from(fee_factor))?
+                                .checked_div(U256::from(PRICE_SCALE * 10_000u64))?;
+                            out.min(state.reserve_y)
+                        } else {
+                            // Y → X: amount_out_X = amount_in_Y / price × (1 - fee)
+                            // Divisor: price_scaled * 10_000 — use U256 to avoid u64 overflow.
+                            let divisor = U256::from(price_scaled_u128)
+                                .saturating_mul(U256::from(10_000u32));
+                            let out = amount
+                                .checked_mul(U256::from(PRICE_SCALE))?
+                                .checked_mul(U256::from(fee_factor))?
+                                .checked_div(divisor)?;
+                            out.min(state.reserve_x)
+                        };
+
+                        if amount_out.is_zero() {
+                            return None;
+                        }
+                        amount = amount_out;
+                    } else {
+                        return None;
+                    }
+                }
             }
         }
         Some(amount)
@@ -158,11 +220,12 @@ impl ArbPath {
         token_in_decimals: u8,
         reserves: &HashMap<H160, Reserve>,
         algebra_states: &HashMap<H160, AlgebraPoolFull>,
+        lfj_states: &HashMap<H160, LFJState>,
     ) -> u128 {
         let unit = U256::from(10u64).pow(U256::from(token_in_decimals));
         let amount_in = U256::from(amount_in_tokens);
         let cost = amount_in.saturating_mul(unit);
-        match self.simulate_mixed_path(amount_in, reserves, algebra_states) {
+        match self.simulate_mixed_path(amount_in, reserves, algebra_states, lfj_states) {
             Some(out) if out > cost => (out - cost).as_u128(),
             _ => 0,
         }
@@ -181,6 +244,7 @@ impl ArbPath {
         _step_size: usize,           // kept for API compatibility, ignored
         reserves: &HashMap<H160, Reserve>,
         algebra_states: &HashMap<H160, AlgebraPoolFull>,
+        lfj_states: &HashMap<H160, LFJState>,
     ) -> (U256, U256) {
         let token_in_decimals = if self.zero_for_one_1 {
             self.pool_1.decimals0
@@ -197,8 +261,8 @@ impl ArbPath {
             let third = (hi - lo) / 3;
             let m1 = lo + third;
             let m2 = hi - third;
-            let f1 = self.profit_at(m1, token_in_decimals, reserves, algebra_states);
-            let f2 = self.profit_at(m2, token_in_decimals, reserves, algebra_states);
+            let f1 = self.profit_at(m1, token_in_decimals, reserves, algebra_states, lfj_states);
+            let f2 = self.profit_at(m2, token_in_decimals, reserves, algebra_states, lfj_states);
             if f1 < f2 {
                 lo = m1;
             } else {
@@ -210,7 +274,7 @@ impl ArbPath {
         let mut best_tokens: u64 = 0;
         let mut best_profit_raw: u128 = 0;
         for t in lo..=hi {
-            let p = self.profit_at(t, token_in_decimals, reserves, algebra_states);
+            let p = self.profit_at(t, token_in_decimals, reserves, algebra_states, lfj_states);
             if p > best_profit_raw {
                 best_profit_raw = p;
                 best_tokens = t;
@@ -226,7 +290,7 @@ impl ArbPath {
         // cross-check: re-simulate to get actual out, derive profit cleanly
         let amount_in = U256::from(best_tokens);
         let cost = amount_in.saturating_mul(unit);
-        let profit = match self.simulate_mixed_path(amount_in, reserves, algebra_states) {
+        let profit = match self.simulate_mixed_path(amount_in, reserves, algebra_states, lfj_states) {
             Some(out) if out > cost => out - cost,
             _ => profit_u256,
         };
@@ -251,6 +315,7 @@ impl ArbPath {
         _ignored: U256,                   // kept for call-site compatibility
         v2_reserves: &HashMap<H160, Reserve>,
         algebra_states: &HashMap<H160, AlgebraPoolFull>,
+        lfj_states: &HashMap<H160, LFJState>,
     ) -> (U256, U256) {
         let token_in_decimals = if self.zero_for_one_1 {
             self.pool_1.decimals0
@@ -265,7 +330,7 @@ impl ArbPath {
         let mut prev_p: u128 = 0;
         let mut probe: u64 = 1;
         loop {
-            let p = self.profit_at(probe, token_in_decimals, v2_reserves, algebra_states);
+            let p = self.profit_at(probe, token_in_decimals, v2_reserves, algebra_states, lfj_states);
             if p <= prev_p {
                 // profit stopped growing — peak is in [prev_t, probe]
                 break;
@@ -279,7 +344,7 @@ impl ArbPath {
         }
 
         // If profit never went positive just return zero.
-        if prev_p == 0 && self.profit_at(probe, token_in_decimals, v2_reserves, algebra_states) == 0 {
+        if prev_p == 0 && self.profit_at(probe, token_in_decimals, v2_reserves, algebra_states, lfj_states) == 0 {
             return (U256::zero(), U256::zero());
         }
 
@@ -289,12 +354,13 @@ impl ArbPath {
             1,
             v2_reserves,
             algebra_states,
+            lfj_states,
         );
         // If the ternary search found nothing better than prev_t, return prev_t directly.
         if result.1 == U256::zero() && prev_p > 0 {
             let unit = U256::from(10u64).pow(U256::from(token_in_decimals));
             let cost = U256::from(prev_t).saturating_mul(unit);
-            let out = self.simulate_mixed_path(U256::from(prev_t), v2_reserves, algebra_states);
+            let out = self.simulate_mixed_path(U256::from(prev_t), v2_reserves, algebra_states, lfj_states);
             let profit = out.map(|o| if o > cost { o - cost } else { U256::zero() }).unwrap_or(U256::zero());
             return (U256::from(prev_t), profit);
         }
@@ -339,15 +405,21 @@ impl ArbPath {
                     let r = if direct_pair { pool.address } else { v2_router };
                     (2u8, r)
                 }
+                PoolType::LFJ(_) => {
+                    // LFJ Liquidity Book: call pair directly.
+                    // pool_type=4 → _swapLFJPair() in V2ArbBot.sol
+                    (4u8, pool.address)
+                }
                 PoolType::V2(_) => {
                     let r = if direct_pair { pool.address } else { v2_router };
                     (0u8, r)
                 }
             };
 
-            // Pass fee in bps for V2/stable swaps; 0 for CL pools (fee is in the pool state).
+            // Pass fee in bps for V2/stable/LFJ swaps; 0 for CL pools (fee is in the pool state).
             let fee = match &pool.pool_type {
                 PoolType::V2(v2) => v2.fee as u64,
+                PoolType::LFJ(lp) => lp.base_fee_bps as u64,
                 PoolType::Algebra(_) | PoolType::UniswapV3CL(_) => 0,
             };
 
@@ -390,10 +462,11 @@ pub fn generate_cross_dex_paths(
     v2_pools: &[Pool],
     algebra_pools: &[AlgebraPoolFull],
     v3cl_pools: &[AlgebraPoolFull],
+    lfj_pools: &[LFJPoolInfo],
     token_in: H160,
 ) -> Vec<ArbPath> {
     let mut all_pools: Vec<AnyPool> =
-        Vec::with_capacity(v2_pools.len() + algebra_pools.len() + v3cl_pools.len());
+        Vec::with_capacity(v2_pools.len() + algebra_pools.len() + v3cl_pools.len() + lfj_pools.len());
     for p in v2_pools {
         all_pools.push(wrap_v2(p));
     }
@@ -415,6 +488,16 @@ pub fn generate_cross_dex_paths(
             token1: p.token1,
             decimals0: p.decimals0,
             decimals1: p.decimals1,
+        });
+    }
+    for p in lfj_pools {
+        all_pools.push(AnyPool {
+            pool_type: PoolType::LFJ(p.clone()),
+            address: p.address,
+            token0: p.token_x,
+            token1: p.token_y,
+            decimals0: p.decimals_x,
+            decimals1: p.decimals_y,
         });
     }
 
@@ -472,11 +555,12 @@ pub fn generate_triangular_paths_mixed(
     v2_pools: &[Pool],
     algebra_pools: &[AlgebraPoolFull],
     v3cl_pools: &[AlgebraPoolFull],
+    lfj_pools: &[LFJPoolInfo],
     token_in: H160,
 ) -> Vec<ArbPath> {
     // Combine all pools into AnyPool list
     let mut all_pools: Vec<AnyPool> =
-        Vec::with_capacity(v2_pools.len() + algebra_pools.len() + v3cl_pools.len());
+        Vec::with_capacity(v2_pools.len() + algebra_pools.len() + v3cl_pools.len() + lfj_pools.len());
     
     for p in v2_pools {
         all_pools.push(wrap_v2(p));
@@ -501,6 +585,17 @@ pub fn generate_triangular_paths_mixed(
             token1: p.token1,
             decimals0: p.decimals0,
             decimals1: p.decimals1,
+        });
+    }
+
+    for p in lfj_pools {
+        all_pools.push(AnyPool {
+            pool_type: PoolType::LFJ(p.clone()),
+            address: p.address,
+            token0: p.token_x,
+            token1: p.token_y,
+            decimals0: p.decimals_x,
+            decimals1: p.decimals_y,
         });
     }
 

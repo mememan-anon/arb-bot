@@ -10,6 +10,7 @@ import "./interface/IBalancer.sol";
 import "./interface/IAaveV3.sol";
 import "./interface/IAlgebraPool.sol";
 import "./interface/IRamsesV3Pool.sol";
+import "./interface/ILBPair.sol";
 
 /// @dev Minimal extension of IERC20 to access decimals() for stable AMM math.
 interface IERC20Extended is IERC20 {
@@ -23,6 +24,15 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
     address public immutable owner;
     IWETH public immutable mainCurrency;
     mapping(address => bool) public allowedFlashAssets;
+
+    /// @dev Trusted Aave V3 pool address — set by owner, checked in executeOperation.
+    address public aavePool;
+
+    /// @dev Transient auth slots for CL swap callbacks — set to the pool being swapped
+    ///      before pool.swap() and cleared immediately after.  Prevents any EOA from
+    ///      calling the callbacks and draining contract tokens.
+    address private _pendingAlgebraPool;
+    address private _pendingRamsesPool;
 
     receive() external payable {
         // wrap on receive
@@ -39,6 +49,12 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
     function setAllowedFlashAsset(address asset, bool allowed) external {
         require(msg.sender == owner, "not owner");
         allowedFlashAssets[asset] = allowed;
+    }
+
+    /// @notice Set the trusted Aave V3 pool address (checked in executeOperation).
+    function setAavePool(address _aavePool) external {
+        require(msg.sender == owner, "not owner");
+        aavePool = _aavePool;
     }
 
     function recoverToken(address token) public payable {
@@ -64,6 +80,9 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
             IERC20 token = IERC20(tokens[i]);
             uint allowance = token.allowance(address(this), router);
             if (allowance < (maxInt / 2) || force) {
+                // USDT-style tokens revert on approve() when current allowance > 0.
+                // Reset to zero first, then set to max.
+                token.safeApprove(router, 0);
                 token.safeApprove(router, maxInt);
             }
 
@@ -117,6 +136,8 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
         address tokenIn,
         uint amountIn
     ) internal returns (uint amountOut) {
+        // Arm callback auth before calling pool.swap(); disarm after.
+        _pendingAlgebraPool = poolAddr;
         IAlgebraPool pool = IAlgebraPool(poolAddr);
         bool zeroToOne = (tokenIn == pool.token0());
 
@@ -132,6 +153,7 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
             abi.encode(tokenIn, amountIn)
         );
 
+        _pendingAlgebraPool = address(0);
         amountOut = uint256(zeroToOne ? -delta1 : -delta0);
     }
 
@@ -225,12 +247,42 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
         }
     }
 
+    // ── LFJ Liquidity Book V2.1/V2.2 ─────────────────────────────────────────
+    /// @notice Swap on an LFJ Liquidity Book pair.
+    /// @dev    Transfer tokenIn to the pair before calling; measures output via balance snapshot.
+    function _swapLFJPair(
+        address pairAddr,
+        address tokenIn,
+        address tokenOut,
+        uint    amountIn
+    ) internal returns (uint amountOut) {
+        ILBPair pair = ILBPair(pairAddr);
+
+        // swapForY = true means tokenIn is tokenX (sell X, buy Y).
+        address tokenX = pair.getTokenX();
+        bool swapForY = (tokenIn == tokenX);
+
+        // Snapshot tokenOut balance before swap.
+        uint balanceBefore = IERC20(tokenOut).balanceOf(address(this));
+
+        // Transfer input tokens to the pair.
+        IERC20(tokenIn).safeTransfer(pairAddr, amountIn);
+
+        // Execute swap — result is packed bytes32 (high 128 = amountY, low 128 = amountX).
+        pair.swap(swapForY, address(this));
+
+        // Actual received amount via balance delta.
+        amountOut = IERC20(tokenOut).balanceOf(address(this)) - balanceBefore;
+    }
+
     // ── Pharaoh CL / RamsesV3 (Uniswap V3 fork) ─────────────────────────────
     function _swapRamsesV3Pool(
         address poolAddr,
         address tokenIn,
         uint    amountIn
     ) internal returns (uint amountOut) {
+        // Arm callback auth before calling pool.swap(); disarm after.
+        _pendingRamsesPool = poolAddr;
         IRamsesV3Pool pool = IRamsesV3Pool(poolAddr);
         bool zeroForOne = (tokenIn == pool.token0());
 
@@ -247,6 +299,7 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
             abi.encode(tokenIn, amountIn)
         );
 
+        _pendingRamsesPool = address(0);
         amountOut = uint256(zeroForOne ? -delta1 : -delta0);
     }
 
@@ -257,6 +310,11 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
         int256 amount1Delta,
         bytes calldata data
     ) external override {
+        // Only the pool we just called may invoke this callback.
+        require(
+            _pendingRamsesPool != address(0) && msg.sender == _pendingRamsesPool,
+            "V3CB: not pool"
+        );
         (address tokenIn, ) = abi.decode(data, (address, uint256));
         uint256 actualAmount = uint256(amount0Delta > 0 ? amount0Delta : amount1Delta);
         IERC20(tokenIn).safeTransfer(msg.sender, actualAmount);
@@ -311,6 +369,10 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
                 // RamsesV3 / Pharaoh CL — Uniswap V3 fork.
                 // router field holds pool address; fee handled internally by the pool.
                 amountOut = _swapRamsesV3Pool(router, tokenIn, amountOut);
+            } else if (poolType == 4) {
+                // LFJ Liquidity Book V2.1/V2.2 — call pair directly.
+                // router field holds pair address.
+                amountOut = _swapLFJPair(router, tokenIn, tokenOut, amountOut);
             } else {
                 // V2 direct pair swap: `router` is the pair address
                 amountOut = _swapV2Pair(router, tokenIn, tokenOut, amountOut, feeBps);
@@ -326,7 +388,7 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
     function receiveFlashLoan(
         IERC20[] memory tokens,
         uint[] memory amounts,
-        uint[] memory,
+        uint[] memory feeAmounts,
         bytes memory data
     ) external override {
         address vault;
@@ -345,8 +407,9 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
         // because if we can't pay back the loan, our function simply reverts
         _execute(data);
 
-        // repay the amount borrowed from flashloan
-        token.transfer(vault, amountIn);
+        // Repay principal + Balancer fee (feeAmounts[0] > 0 on some Balancer deployments).
+        // Using safeTransfer to support non-standard ERC20 tokens (e.g. USDT).
+        token.safeTransfer(vault, amountIn + feeAmounts[0]);
     }
 
     /// @notice Algebra swap callback - called by pool during swap to request input tokens
@@ -355,6 +418,11 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
         int256 amount1Delta,
         bytes calldata data
     ) external {
+        // Only the pool we just called may invoke this callback.
+        require(
+            _pendingAlgebraPool != address(0) && msg.sender == _pendingAlgebraPool,
+            "AlgCB: not pool"
+        );
         // Decode only tokenIn from the callback data; use actual pool-computed delta
         (address tokenIn, ) = abi.decode(data, (address, uint256));
         // The pool tells us exactly how much it needs via the positive delta
@@ -398,14 +466,18 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
         address initiator,
         bytes calldata params
     ) external override returns (bool) {
-        // Aave V3 flashLoanSimple callback
+        // Aave V3 flashLoanSimple callback — verify both the initiator and caller.
         require(initiator == address(this), "invalid initiator");
+        require(aavePool != address(0) && msg.sender == aavePool, "not aave pool");
         require(allowedFlashAssets[asset], "asset not allowed");
 
         // Execute swaps using same calldata format as fallback
         _execute(params);
 
         uint256 repayAmount = amount + premium;
+        // Approve the Aave pool (msg.sender) to pull the repayment.
+        // Reset allowance to 0 first to satisfy USDT-style tokens.
+        IERC20(asset).safeApprove(msg.sender, 0);
         IERC20(asset).safeApprove(msg.sender, repayAmount);
         return true;
     }
@@ -450,8 +522,8 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
         uint repayFee = (amountIn * feeBps) / (10000 - feeBps) + 1;
         uint repayAmount = amountIn + repayFee;
 
-        // repay the amount borrowed from flashloan: (amount + fee)
-        IERC20(tokenIn).transfer(loanPool, repayAmount);
+        // Repay principal + fee using safeTransfer (supports non-standard tokens).
+        IERC20(tokenIn).safeTransfer(loanPool, repayAmount);
     }
 
     fallback() external payable {

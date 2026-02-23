@@ -5,7 +5,7 @@ use ethers::{
     types::{H160, U256},
 };
 use ethers_contract::{Contract, Multicall};
-use log::info;
+use log::{info, warn};
 use std::{collections::HashMap, sync::Arc, time::Instant};
 
 use crate::{abi::ABI, pools::Pool};

@@ -50,6 +50,20 @@ pub struct DexesConfig {
     pub algebra: Option<AlgebraConfig>,
     /// UniswapV3 CL (any V3 fork) — slot0() ABI concentrated liquidity.
     pub uniswapv3cl: Option<UniswapV3CLConfig>,
+    /// LFJ Liquidity Book V2.1/V2.2 bin-based AMM.
+    pub lfj: Option<LFJConfig>,
+}
+
+/// LFJ (Liquidity Book) V2.1/V2.2 configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct LFJConfig {
+    pub enabled: bool,
+    /// LFJ LBRouter V2.2 address.
+    #[serde(default)]
+    pub router_v22: Option<String>,
+    /// LFJ LBRouter V2.1 address.
+    #[serde(default)]
+    pub router_v21: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -188,7 +202,11 @@ impl Default for ExecutionConfig {
     }
 }
 
-fn default_min_profit_threshold() -> f64 { 5.0 }
+/// Default minimum profit threshold in start-token units (not USD).
+/// The active config file (e.g. avax.toml) always overrides this.
+/// For WAVAX: 0.002 = ~0.06 USD; for USDC: 0.002 = $0.002.
+/// Raise this value if you want to filter out very small opportunities.
+fn default_min_profit_threshold() -> f64 { 0.002 }
 fn default_max_position_size() -> f64 { 10000.0 }
 fn default_true() -> bool { true }
 fn default_flashloan_provider() -> String { "AaveV3".to_string() }

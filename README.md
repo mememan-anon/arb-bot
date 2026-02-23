@@ -21,3 +21,6 @@ Use Anvil mainnet hardforks to test the contracts.
 ```bash
 anvil --fork-url $HTTPS_RPC_URL
 ```
+
+# AMM volatile pools (Pharaoh, Blackhole, etc.) cached via: python scripts/pull_pharaoh.py --amm
+# Run: python scripts/pull_pharaoh.py --amm --config-path config/avax.toml

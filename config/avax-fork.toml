@@ -1,6 +1,7 @@
 # bot_address = "0x267fB71b280FB34B278CedE84180a9A9037C941b"  # old
 # bot_address = "0x7C4BDA48bd4C9ac4FbcC60deEb66bf80d35705f0"  # deployed 2026-02-23 (cross-dex test)
-bot_address = "0x633a7eB9b8912b22f3616013F3153de687F96074"    # deployed with balance-tracking fix
+# bot_address = "0x633a7eB9b8912b22f3616013F3153de687F96074"    # deployed with balance-tracking fix
+bot_address = "0x4728aF32823cf144586DaB95632156cC81BB0203"    # deployed 2026-02-23 with all security fixes
 
 [chain]
 name = "avalanche-fork"

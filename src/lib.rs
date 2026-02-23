@@ -5,6 +5,7 @@ pub mod concentrated_liquidity;
 pub mod config;
 pub mod constants;
 pub mod executor;
+pub mod lfj;
 pub mod multi;
 pub mod paths;
 pub mod uniswapv3cl;
@@ -25,6 +26,7 @@ mod tests {
 	use crate::config::Config;
 	use crate::concentrated_liquidity::calculate_amount_out;
 	use crate::executor::Executor;
+	use crate::lfj::LFJState;
 	use crate::multi::Reserve;
 	use crate::paths::ArbPath;
 	use crate::pools::{AnyPool, DexVariant, Pool, PoolType};
@@ -132,7 +134,7 @@ mod tests {
 		algebra_states.insert(alg_addr, algebra_pool);
 
 		let out = path
-			.simulate_mixed_path(U256::from(1u64), &reserves, &algebra_states)
+			.simulate_mixed_path(U256::from(1u64), &reserves, &algebra_states, &HashMap::<H160, LFJState>::new())
 			.expect("mixed path should simulate");
 
 		assert!(out > U256::zero());
@@ -244,13 +246,14 @@ mod tests {
 				zero_for_one_3: true,
 			};
 
-			let simulated = path.simulate_mixed_path(U256::from(1u64), &reserves, &algebra_states);
+			let simulated = path.simulate_mixed_path(U256::from(1u64), &reserves, &algebra_states, &HashMap::<H160, LFJState>::new());
 			assert!(simulated.is_some(), "path simulation should succeed for mixed combo");
 
 			let (_opt_in, profit) = path.optimize_amount_in_mixed(
 				U256::from(100u64),
 				&reserves,
 				&algebra_states,
+				&HashMap::<H160, LFJState>::new(),
 			);
 			assert!(profit >= U256::zero(), "profit computation should be defined");
 		}
@@ -306,6 +309,7 @@ mod tests {
 			U256::from(100u64),
 			&reserves,
 			&algebra_states,
+			&HashMap::<H160, LFJState>::new(),
 		);
 
 		assert!(profit > U256::zero(), "expected profitable cycle to be detected");

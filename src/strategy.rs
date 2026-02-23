@@ -10,6 +10,7 @@ use tokio::sync::broadcast::Sender;
 
 use crate::algebra::{fetch_algebra_states, load_algebra_pools_from_v3_csv};
 use crate::uniswapv3cl::{fetch_full_uniswapv3cl_pools, fetch_uniswapv3cl_states, load_uniswapv3cl_pools_from_csv};
+use crate::lfj::{fetch_lfj_states, load_lfj_pools_from_csv, LFJState};
 use crate::bundler::Bundler;
 use crate::config::{Config, TokenConfig};
 use crate::constants::{get_blacklist_tokens, Env, WEI};
@@ -146,6 +147,23 @@ pub async fn event_handler(
         }
     }
 
+    // ── LFJ Liquidity Book pools ────────────────────────────────────────────
+    let mut lfj_pools_full = Vec::new();
+
+    if let Some(lfj_cfg) = config.dexes.lfj.as_ref() {
+        if lfj_cfg.enabled {
+            match load_lfj_pools_from_csv(cache_dir) {
+                Ok(pools) => {
+                    info!("Loaded {} LFJ pools from CSV cache", pools.len());
+                    lfj_pools_full = pools;
+                }
+                Err(e) => {
+                    info!("Failed to load LFJ pools (run scripts/pull_lfj.py first): {:?}", e);
+                }
+            }
+        }
+    }
+
     // Generate paths for ALL configured start tokens (multi-token support)
     let mut all_paths = Vec::new();
     let mut token_to_paths: HashMap<H160, Vec<usize>> = HashMap::new();
@@ -168,12 +186,14 @@ pub async fn event_handler(
             &pools_vec,
             &algebra_pools_full,
             &v3cl_pools_full,
+            &lfj_pools_full,
             start_address
         );
         let cross_paths = generate_cross_dex_paths(
             &pools_vec,
             &algebra_pools_full,
             &v3cl_pools_full,
+            &lfj_pools_full,
             start_address
         );
         let mut token_paths = tri_paths;
@@ -227,6 +247,10 @@ pub async fn event_handler(
                 // keyed by pool address and share AlgebraPoolFull fields.
                 algebra_pools_map.insert(pool.address, v3cl.clone());
             },
+            PoolType::LFJ(_) => {
+                // LFJ state is fetched separately via fetch_lfj_states.
+                // static LFJPoolInfo is already embedded in the path's pool_type.
+            },
         }
     }
 
@@ -238,6 +262,9 @@ pub async fn event_handler(
             reserves.insert(pool.address, reserve.clone());
         }
     }
+
+    // LFJ per-block state map (initially empty, refreshed every block).
+    let mut lfj_states_map: HashMap<H160, LFJState> = HashMap::new();
 
     if debug_spreads {
         let reserves_snapshot: HashMap<H160, Reserve> =
@@ -256,7 +283,7 @@ pub async fn event_handler(
                     path.zero_for_one_2,
                     path.zero_for_one_3
                 );
-                match path.simulate_mixed_path(U256::from(1u64), &reserves_snapshot, &algebra_pools_map) {
+                match path.simulate_mixed_path(U256::from(1u64), &reserves_snapshot, &algebra_pools_map, &lfj_states_map) {
                     Some(out) => warn!("Seeded path idx={} simulate_out={}", idx, out),
                     None => warn!("Seeded path idx={} simulate_out=None", idx),
                 }
@@ -387,6 +414,11 @@ pub async fn event_handler(
                         }
                     }
 
+                    // 1c. Update LFJ aggregate reserves
+                    if !lfj_pools_full.is_empty() {
+                        lfj_states_map = fetch_lfj_states(provider.clone(), &lfj_pools_full).await;
+                    }
+
                     // 2. Update V2 reserves
                     let touched_reserves =
                         match get_touched_pool_reserves(provider.clone(), block.block_number).await
@@ -446,6 +478,10 @@ pub async fn event_handler(
                             let has_algebra = path.get_pool(0).pool_type.is_cl()
                                 || path.get_pool(1).pool_type.is_cl()
                                 || path.get_pool(2).pool_type.is_cl();
+
+                            let has_lfj = path.get_pool(0).pool_type.is_lfj()
+                                || path.get_pool(1).pool_type.is_lfj()
+                                || path.get_pool(2).pool_type.is_lfj();
                             
                             let is_touched_v2 = touched_pools
                                 .iter()
@@ -458,10 +494,10 @@ pub async fn event_handler(
                                 continue;
                             }
 
-                            if evaluate_all || has_algebra || is_touched_v2 {
+                            if evaluate_all || has_algebra || has_lfj || is_touched_v2 {
                                 let one_token_in = U256::from(1);
 
-                                let simulated = path.simulate_mixed_path(one_token_in, &reserves_snapshot, &algebra_pools_map);
+                                let simulated = path.simulate_mixed_path(one_token_in, &reserves_snapshot, &algebra_pools_map, &lfj_states_map);
 
                                 match simulated {
                                     Some(price_quote) => {
@@ -534,6 +570,7 @@ pub async fn event_handler(
                                 U256::zero(), // ceiling auto-detected by exponential probe
                                 &reserves_snapshot,
                                 &algebra_pools_map,
+                                &lfj_states_map,
                             );
                             
                             // Deduct Aave flashloan premium (5 bps on borrowed principal).
@@ -569,13 +606,47 @@ pub async fn event_handler(
                                     format!("{}.{}", profit_whole, profit_frac_str)
                                 };
 
+                                // ── Detection-time threshold filter ──────────────────────────────
+                                // Only surface (log + execute) paths whose profit exceeds
+                                // min_profit_threshold.  This fires at detection, not just at
+                                // execution, so the log is never cluttered with sub-threshold hits.
+                                let profit_in_token_f64 = (profit_u256.as_u128() as f64)
+                                    / ((10_u128.pow(start_token.decimals as u32)) as f64);
+                                if profit_in_token_f64 < config.execution.min_profit_threshold {
+                                    continue;
+                                }
+
+                                // ── Path-type label ───────────────────────────────────────────────
+                                let path_kind = if path.nhop == 2 {
+                                    "Cross-dex"
+                                } else {
+                                    "Triangular"
+                                };
+
+                                // Short DEX name for each hop
+                                let dex_label = |pool: &crate::pools::AnyPool| -> &'static str {
+                                    match &pool.pool_type {
+                                        crate::pools::PoolType::V2(_)          => "V2",
+                                        crate::pools::PoolType::Algebra(_)     => "Algebra",
+                                        crate::pools::PoolType::UniswapV3CL(_) => "V3CL",
+                                        crate::pools::PoolType::LFJ(_)        => "LFJ",
+                                    }
+                                };
+                                let hops = if path.nhop == 2 {
+                                    format!("{}→{}", dex_label(&path.pool_1), dex_label(&path.pool_2))
+                                } else {
+                                    format!("{}→{}→{}", dex_label(&path.pool_1), dex_label(&path.pool_2), dex_label(&path.pool_3))
+                                };
+
                                 info!(
-                                    "Profitable path found: token={} idx={} profit={} {} amount_in={} tokens",
+                                    "[{}] Profitable path found: token={} idx={} profit={} {} amount_in={} tokens [{}]",
+                                    path_kind,
                                     start_token.symbol,
                                     path_idx,
                                     profit_display,
                                     start_token.symbol,
-                                    opt.0
+                                    opt.0,
+                                    hops
                                 );
 
                                 // --- Persist to opportunities.log ---
@@ -590,9 +661,11 @@ pub async fn event_handler(
                                     {
                                         let _ = writeln!(
                                             f,
-                                            "{ts} | block={block} | token={tok} | idx={idx} | profit={profit} {tok} | amount_in={amt} | p1={p1} | p2={p2} | p3={p3}",
+                                            "{ts} | block={block} | kind={kind} | hops={hops} | token={tok} | idx={idx} | profit={profit} {tok} | amount_in={amt} | p1={p1} | p2={p2} | p3={p3}",
                                             ts   = Utc::now().format("%Y-%m-%dT%H:%M:%SZ"),
                                             block = block.block_number,
+                                            kind = path_kind,
+                                            hops = hops,
                                             tok  = start_token.symbol,
                                             idx  = path_idx,
                                             profit = profit_display,
@@ -850,6 +923,10 @@ fn estimate_gas_cost_in_start_token(
                 if price == 0.0 { 0.0 } else { 1.0 / price }
             }
         }
+        PoolType::LFJ(_) => {
+            // LFJ pools are unlikely to be the gas oracle; return 0.
+            return U256::zero();
+        }
     };
 
     let estimated_gas_usage = U256::from(config.execution.estimated_gas);
@@ -868,9 +945,63 @@ fn estimate_gas_cost_in_start_token(
         return gas_cost_in_stable;
     }
 
-    // If start token is not the stable token, we should convert...
-    // But currently returning stable cost as approximation if we can't convert.
-    // Ideally we recursively find price for start token.
-    
-    gas_cost_in_stable
+    // Start token is not the stable — convert stable gas cost → start token units.
+    // We need the start-token price in stable. Use the same gas pool if it pairs
+    // start_token/stable; otherwise fall back to a simple ratio from any V2 reserve
+    // that prices start_token in stable.
+    // Strategy: look for a V2 pool whose token0 or token1 is start_token and whose
+    // other token is stable; compute price and invert gas_cost_in_stable.
+    let stable_addr = match config.gas.stable_address.as_deref().and_then(|s| H160::from_str(s).ok()) {
+        Some(a) => a,
+        None => return gas_cost_in_stable, // can't convert — return as-is (wrong units, but safe)
+    };
+    let start_addr = match H160::from_str(&start.address) {
+        Ok(a) => a,
+        Err(_) => return gas_cost_in_stable,
+    };
+
+    // Search loaded V2 reserves for a pool that bridges start_token<→stable.
+    for (addr, reserve) in reserves.iter() {
+        if let Some(pool) = pools.get(addr) {
+            if let PoolType::V2(v2) = &pool.pool_type {
+                let t0 = pool.token0;
+                let t1 = pool.token1;
+                let (tok_is_t0, stable_present) = if t0 == start_addr && t1 == stable_addr {
+                    (true, true)
+                } else if t1 == start_addr && t0 == stable_addr {
+                    (false, true)
+                } else {
+                    (false, false)
+                };
+                if !stable_present { continue; }
+
+                // price = start_token per stable (how many start_token units equal 1 stable unit)
+                let price_start_per_stable = UniswapV2Simulator::reserves_to_price(
+                    reserve.reserve0,
+                    reserve.reserve1,
+                    v2.decimals0,
+                    v2.decimals1,
+                    !tok_is_t0, // we want stable→start direction
+                );
+                if price_start_per_stable <= 0.0 || !price_start_per_stable.is_finite() {
+                    continue;
+                }
+                // gas_cost_in_stable is in atomic stable units (e.g. 1e6 per USDC token).
+                // Convert to start-token atomic units.
+                let stable_dec = config.gas.stable_decimals.unwrap_or(6) as i32;
+                let start_dec = start.decimals as i32;
+                let gas_stable_f64 = gas_cost_in_stable.as_u64() as f64;
+                // Normalize to whole stable tokens, apply conversion, re-scale to start atoms.
+                let gas_in_start_atoms = gas_stable_f64
+                    / (10.0f64).powi(stable_dec)
+                    * price_start_per_stable
+                    * (10.0f64).powi(start_dec);
+                return U256::from(gas_in_start_atoms as u64);
+            }
+        }
+    }
+
+    // No bridging pool found — return 0 rather than a nonsensical stable amount.
+    // This is safe (never rejects a good opportunity) but means gas isn't charged.
+    U256::zero()
 }
