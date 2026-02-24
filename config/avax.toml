@@ -1,8 +1,8 @@
 [chain]
 name = "avalanche"
 chain_id = 43114
-https_url = "https://lb.drpc.live/avalanche/AuasEqOoxkk5qugXvfDlpIQt-oDXDiMR8bj0-uF7NYYO"
-wss_url = "wss://lb.drpc.live/avalanche/AuasEqOoxkk5qugXvfDlpIQt-oDXDiMR8bj0-uF7NYYO"
+https_url = "https://lb.drpc.live/avalanche/Avvg72d-xUi5gjIvpNPPTpHLAWWhESYR8bz1-uF7NYYO"
+wss_url = "wss://lb.drpc.live/avalanche/Avvg72d-xUi5gjIvpNPPTpHLAWWhESYR8bz1-uF7NYYO"
 wss_urls = [
   "wss://avalanche-c-chain-rpc.publicnode.com",
   "wss://avalanche.drpc.org"
@@ -97,8 +97,8 @@ allowed_assets = [
 ]
 
 [execution]
-enabled = false       # Set to true only when you have a deployed V2ArbBot contract
-min_profit_threshold = 0.002  # Minimum net profit to log/execute (in start token, e.g. 0.002 WAVAX ≈ $0.06)
+enabled = true       # Set to true only when you have a deployed V2ArbBot contract
+min_profit_threshold = 0.50  # Minimum net profit in USD (token-agnostic; $0.50 ≈ 0.016 WAVAX at $30/AVAX)
 max_position_size = 100000000.0  # Maximum amount to trade in USD
 use_flashloan = true
 default_flashloan_provider = "AaveV3"  # Options: AaveV3, Balancer, UniswapV2

@@ -3,12 +3,12 @@ use ethers::{
     self,
     abi::{decode, ParamType, Token},
     providers::{Middleware, Provider, Ws},
-    types::{Filter, H160, U256, U64},
+    types::{Filter, H160, H256, U256, U64},
 };
 use fern::colors::{Color, ColoredLevelConfig};
 use log::LevelFilter;
 use rand::Rng;
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::{HashMap, HashSet}, str::FromStr, sync::Arc};
 
 use crate::multi::Reserve;
 
@@ -124,4 +124,26 @@ pub async fn get_touched_pool_reserves(
     }
 
     Ok(reserves)
+}
+
+/// Query all Uniswap V3-style Swap events that fired in `block_number`.
+///
+/// Returns the set of pool addresses (log emitters) that had at least one swap.
+/// One `eth_getLogs` call per block — same pattern as `get_touched_pool_reserves`.
+///
+/// V3 Swap signature: Swap(address,address,int256,int256,uint160,uint128,int24)
+pub async fn get_touched_v3cl_pools(
+    provider: Arc<Provider<Ws>>,
+    block_number: U64,
+) -> Result<HashSet<H160>> {
+    const SWAP_TOPIC: &str =
+        "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67";
+    let topic = H256::from_str(SWAP_TOPIC)?;
+    let filter = Filter::new()
+        .from_block(block_number)
+        .to_block(block_number)
+        .topic0(topic);
+
+    let logs = provider.get_logs(&filter).await?;
+    Ok(logs.into_iter().map(|l| l.address).collect())
 }

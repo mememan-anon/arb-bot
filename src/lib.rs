@@ -36,7 +36,7 @@ mod tests {
 		let amount_in = U256::from(500_000u64);
 		let sqrt_price_x96 = U256::one() << 96;
 		let liquidity = U256::from(5_000_000_000u64);
-		let out = calculate_amount_out(amount_in, sqrt_price_x96, liquidity, 3000, true)
+		let out = calculate_amount_out(amount_in, sqrt_price_x96, liquidity, 3000, true, 0, 0)
 			.expect("cl amount out should be computable");
 		assert!(out > U256::zero());
 	}
@@ -81,6 +81,7 @@ mod tests {
 			sqrt_price_x96: U256::one() << 96,
 			liquidity: U256::from(10_000_000_000u64),
 			tick: 0,
+			tick_spacing: 0, // 0 = skip boundary check in tests
 		};
 
 		let path = ArbPath {
@@ -171,6 +172,7 @@ mod tests {
 				sqrt_price_x96: U256::one() << 96,
 				liquidity: U256::from(50_000_000_000u64),
 				tick: 0,
+				tick_spacing: 0, // 0 = skip boundary check in tests
 			}),
 			address,
 			token0,

@@ -112,13 +112,18 @@ impl ArbPath {
                 },
                 PoolType::Algebra(pool_full) => {
                      if let Some(state) = algebra_states.get(&pool.address) {
-                         // Using concentrated liquidity math
+                         // Using concentrated liquidity math with tick-boundary guard.
+                         // Pass state.tick (per-block) and pool_full.tick_spacing so the
+                         // simulator can reject swaps that would cross a tick boundary —
+                         // the single-tick formula wildly over-estimates output in that case.
                          if let Some(out) = concentrated_liquidity::calculate_amount_out(
                              amount,
                              state.sqrt_price_x96,
                              state.liquidity,
                              pool_full.fee,
                              zero_for_one,
+                             state.tick,
+                             pool_full.tick_spacing,
                          ) {
                              amount = out;
                          } else {
@@ -138,6 +143,8 @@ impl ArbPath {
                              state.liquidity,
                              pool_full.fee,
                              zero_for_one,
+                             state.tick,
+                             pool_full.tick_spacing,
                          ) {
                              amount = out;
                          } else {

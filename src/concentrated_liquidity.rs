@@ -90,14 +90,38 @@ fn mul_div(a: U256, b: U256, denom: U256) -> Option<U256> {
     a.checked_mul(b)?.checked_div(denom)
 }
 
+/// Floor-division of `tick` to the nearest multiple of `tick_spacing`.
+///
+/// Uses Euclidean remainder (always non-negative) so that negative ticks
+/// are rounded toward −∞ rather than toward 0 (which Rust's `/` does for
+/// integers).
+///
+/// Example: `floor_tick(-8500, 200)` → `-8600`, not `-8400`.
+fn floor_tick(tick: i32, tick_spacing: i32) -> i32 {
+    // rem_euclid is always in [0, tick_spacing), so subtraction floors correctly.
+    tick - tick.rem_euclid(tick_spacing)
+}
+
 /// Calculates amount out for a single-tick CL swap approximation.
-/// Assumes swap does not cross a tick boundary and liquidity is constant.
+///
+/// **Tick-boundary guard**: the single-tick formula assumes the entire
+/// `liquidity` is available throughout the swap.  When the swap would push
+/// the price past the current tick's boundary, the formula over-estimates
+/// output because real liquidity changes at each tick.  This function
+/// returns `None` in that case, signalling to the off-chain optimizer that
+/// the requested `amount_in` is too large for this tick — it will
+/// automatically find the maximum amount that stays within the tick.
+///
+/// `tick` and `tick_spacing` must come from the pool's current on-chain
+/// state.  Pass `tick_spacing = 0` to skip the guard (legacy behaviour).
 pub fn calculate_amount_out(
     amount_in: U256,
     sqrt_price_x96: U256,
     liquidity: U256,
     fee_pips: u32,
     zero_for_one: bool,
+    tick: i32,
+    tick_spacing: i32,
 ) -> Option<U256> {
     if amount_in.is_zero() || sqrt_price_x96.is_zero() || liquidity.is_zero() {
         return Some(U256::zero());
@@ -129,6 +153,16 @@ pub fn calculate_amount_out(
             return Some(U256::zero());
         }
 
+        // Tick-boundary guard: reject if the swap crosses the current tick's
+        // lower boundary (price would move through a tick with different liquidity).
+        if tick_spacing > 0 {
+            let tick_lower = floor_tick(tick, tick_spacing);
+            let sqrt_lower = calculate_sqrt_price_from_tick(tick_lower);
+            if next_sqrt < sqrt_lower {
+                return None; // swap crosses tick boundary — amount_in is too large
+            }
+        }
+
         // amount1 out = L * (sqrtP - sqrtP') / Q96
         mul_div(liquidity, sqrt_price_x96 - next_sqrt, Q96)
     } else {
@@ -139,6 +173,16 @@ pub fn calculate_amount_out(
 
         if next_sqrt <= sqrt_price_x96 {
             return Some(U256::zero());
+        }
+
+        // Tick-boundary guard: reject if the swap crosses the current tick's
+        // upper boundary (price would move through a tick with different liquidity).
+        if tick_spacing > 0 {
+            let tick_lower = floor_tick(tick, tick_spacing);
+            let sqrt_upper = calculate_sqrt_price_from_tick(tick_lower + tick_spacing);
+            if next_sqrt > sqrt_upper {
+                return None; // swap crosses tick boundary — amount_in is too large
+            }
         }
 
         // amount0 out = (L<<96) * (sqrtP' - sqrtP) / (sqrtP' * sqrtP)
@@ -159,6 +203,8 @@ pub fn simulate_cl_swap(
     liquidity: U256,
     fee: u32,
     zero_for_one: bool,
+    tick: i32,
+    tick_spacing: i32,
 ) -> Option<U256> {
-    calculate_amount_out(amount_in, sqrt_price_x96, liquidity, fee, zero_for_one)
+    calculate_amount_out(amount_in, sqrt_price_x96, liquidity, fee, zero_for_one, tick, tick_spacing)
 }

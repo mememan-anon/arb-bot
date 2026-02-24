@@ -1,0 +1,129 @@
+[chain]
+name = "base"
+chain_id = 8453
+https_url = "https://base.blockpi.network/v1/rpc/686596c8e8e6a17b049912098b920c5a1e2a7f04"
+wss_url = "wss://lb.drpc.live/base/Avibgvi26EjPsw76UtdwmsRbjBXa_TYR8LCNehXRfUMv"
+wss_urls = [
+  "wss://base-rpc.publicnode.com",
+  "wss://base.drpc.org",
+  "wss://lb.drpc.live/base/AuasEqOoxkk5qugXvfDlpIQRaeWIDh0R8bjy-uF7NYYO"
+  "https://base-mainnet.g.alchemy.com/v2/4aBLuZOavL1N3YUWe8c9ylHandj-Ez4f"
+]
+
+cache_dir = "base"
+# Output cap: real arb is ~1.001-1.02x; dust fakes are enormous.
+max_profit_pct = 80.0
+blacklisted_tokens = []
+
+# ── Start tokens ────────────────────────────────────────────────────────────
+
+[[start_tokens]]
+symbol = "WETH"
+address = "0x4200000000000000000000000000000000000006"
+decimals = 18
+
+[[start_tokens]]
+symbol = "USDC"
+address = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+decimals = 6
+
+[[start_tokens]]
+symbol = "cbBTC"
+address = "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf"
+decimals = 8
+
+# ── DEXes ────────────────────────────────────────────────────────────────────
+
+# Uniswap V2 on Base
+# Pool data pulled via: python scripts/pull_base_uniswap.py --v2
+# Cached to: cache/base/.cached-pools.csv
+[dexes.v2]
+enabled = true
+factories = ["0x8909Dc15e40173Ff4699343b6eb8132c65e18eC6"]  # Uniswap V2 Factory (Base)
+routers = ["0x4752ba5dbc23f44d87826276bf6fd6b1c372ad24"]    # Uniswap V2 Router02 (Base)
+from_blocks = [0]
+direct_pair = true
+
+[dexes.v3]
+enabled = false
+factories = []
+routers = []
+quoter = ""
+fee_tiers = [100, 500, 3000, 10000]
+
+[dexes.algebra]
+enabled = false
+factories = []
+routers = []
+quoter = ""
+
+# Uniswap V3 concentrated liquidity on Base (slot0 ABI)
+# Pool data pulled via: python scripts/pull_base_uniswap.py --v3
+# Cached to: cache/base/.cached-v3cl-pools.csv
+[dexes.uniswapv3cl]
+enabled = true
+factory = "0x33128a8fC17869897dcE68Ed026d694621f6FDfD"   # Uniswap V3 Factory (Base)
+router  = "0x2626664c2603336E57B271c5C0b26F421741e481"   # Uniswap V3 SwapRouter02 (Base)
+quoter  = "0x3d4e44Eb1374240CE5F1B136041212501e4a0139"   # Uniswap V3 QuoterV2 (Base)
+
+# Raw Uniswap V3 liquidity floor (NOT USD). Filters dust with near-zero active.
+#leave it like this since it just idicates some liquidity. Main filtering at csv generation 50k tvl
+min_liquidity = 1
+
+# Uniswap V4 — also stored in the V3CL CSV for data purposes.
+# NOTE: V4 uses a singleton PoolManager; on-chain execution requires a new
+#       bot contract path (_swapV4PoolManager). Currently pulled/stored as data
+#       only; set enabled = false until the contract is updated.
+# Pool data pulled via: python scripts/pull_base_uniswap.py --v4
+# Cached to: cache/base/.cached-v4cl-pools.csv
+[dexes.uniswapv4cl]
+enabled = false
+pool_manager = "0x498581fF718922c3f8e6A244956aF099B2652b2b"  # Uniswap V4 PoolManager (Base)
+
+[dexes.lfj]
+enabled = false
+router_v22 = ""
+router_v21 = ""
+
+# ── Gas pricing pool ─────────────────────────────────────────────────────────
+# Uses a live on-chain pool to convert ETH gas costs → USD equivalent profit
+# threshold. WETH/USDC 0.05% Uniswap V3 pool on Base.
+[gas]
+enabled = true
+token_symbol  = "WETH"
+token_address = "0x4200000000000000000000000000000000000006"
+token_decimals = 18
+
+stable_symbol  = "USDC"
+stable_address = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+stable_decimals = 6
+pool_address   = "0xd0b53D9277642d899DF5C87A3966A349A798F224"  # UniV3 WETH/USDC 0.05%
+token_is_token0 = true   # WETH (0x4200...) < USDC (0x8335...) → token0
+
+# ── AaveV3 (Base) ────────────────────────────────────────────────────────────
+# Verify latest addresses at: https://docs.aave.com/developers/deployed-contracts/v3-mainnet/base
+[aave_v3]
+pool                    = "0xA238Dd80C259a72e81d7e4664a9801593F98d1c5"
+pool_addresses_provider = "0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64B"
+oracle                  = "0x2Cc0Fc26eD4563A5ce5e8bdcfe1A2878676Ae156"
+data_provider           = "0x0F43731EB8d45A581f4a36DD74F5f358bc90C73A"
+allowed_assets = [
+  "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",  # USDC
+  "0x4200000000000000000000000000000000000006",  # WETH
+  "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf",  # cbBTC
+  ]
+
+# ── Execution ─────────────────────────────────────────────────────────────────
+# Set enabled = false once you deploy V2ArbBot to Base and update 'contract_address'.
+[execution]
+enabled = false                  # Bot contract NOT yet deployed on Base
+contract_address = ""            # TODO: deploy V2ArbBot.sol on Base and fill in
+min_profit_threshold = 0.0       # Minimum net profit in USD (0.0 = log everything; raise after testing)
+max_position_size = 100000000.0
+use_flashloan = true
+default_flashloan_provider = "AaveV3"
+max_priority_fee_gwei = 0.01     # Base L2: priority fees are tiny
+max_base_fee_gwei = 5            # Base L2: very cheap
+simulation_required = true
+estimated_gas = 550000
+balancer_vault = "0xBA12222222228d8Ba445958a75a0704d566BF2C8"  # Balancer V2 Vault (same all chains)

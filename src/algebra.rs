@@ -35,6 +35,7 @@ pub async fn fetch_full_algebra_pools(
         let provider = provider.clone();
         let pool_addr = info.address;
         let fee = info.fee;
+        let tick_spacing = info.tick_spacing;
 
         futures.push(async move {
             let pool_contract = AlgebraPool::new(pool_addr, provider.clone());
@@ -95,6 +96,7 @@ pub async fn fetch_full_algebra_pools(
                 sqrt_price_x96: sqrt_price,
                 liquidity,
                 tick,
+                tick_spacing,
             })
         });
     }
@@ -110,6 +112,9 @@ pub struct AlgebraPoolInfo {
     pub token1_symbol: String,
     pub fee: u32,
     pub tvl_usd: f64,
+    /// Tick spacing for this pool (e.g. 1, 50, 100, 200).
+    /// Used to detect tick-crossing in the off-chain CL simulation.
+    pub tick_spacing: i32,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -133,8 +138,10 @@ pub struct AlgebraPoolFull {
     pub fee: u32,
     pub sqrt_price_x96: U256,
     pub liquidity: U256,
-    pub tick: i32,
-}
+    pub tick: i32,    /// Tick spacing for this pool. Used in off-chain CL simulation to detect
+    /// swaps that would cross a tick boundary (which the single-tick
+    /// approximation cannot model accurately).
+    pub tick_spacing: i32,}
 
 pub fn load_algebra_pools_from_v3_csv(cache_dir: &str) -> Result<Vec<AlgebraPoolInfo>> {
     let path = format!("cache/{cache_dir}/.cached-algebra-pools.csv");
@@ -153,12 +160,19 @@ pub fn load_algebra_pools_from_v3_csv(cache_dir: &str) -> Result<Vec<AlgebraPool
             .unwrap_or("0")
             .parse::<u32>()
             .unwrap_or(0);
+        // Column 8 = tick_spacing (header: tick_spacing)
+        let tick_spacing = row
+            .get(8)
+            .unwrap_or("1")
+            .parse::<i32>()
+            .unwrap_or(1);
         pools.push(AlgebraPoolInfo {
             address,
             token0_symbol: String::new(),
             token1_symbol: String::new(),
             fee,
             tvl_usd: 0.0,
+            tick_spacing,
         });
     }
 

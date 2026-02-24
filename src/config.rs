@@ -122,6 +122,12 @@ pub struct UniswapV3CLConfig {
     /// Quoter / QuoterV2 address (optional, used for off-chain price queries).
     #[serde(default)]
     pub quoter: Option<String>,
+    /// Minimum raw Uniswap V3 liquidity (L = sqrt(x*y) in atomic units) for a
+    /// pool to be considered active each block.  This is NOT a USD value.
+    /// 0 = only skip zero-liquidity pools (default).
+    /// 1_000_000_000 (1e9) = filter out dust while keeping any real pool.
+    #[serde(default)]
+    pub min_liquidity: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -171,9 +177,9 @@ pub struct ExecutionConfig {
     #[serde(default = "default_flashloan_provider")]
     pub default_flashloan_provider: String,
     #[serde(default = "default_max_priority_fee_gwei")]
-    pub max_priority_fee_gwei: u64,
+    pub max_priority_fee_gwei: f64,
     #[serde(default = "default_max_base_fee_gwei")]
-    pub max_base_fee_gwei: u64,
+    pub max_base_fee_gwei: f64,
     #[serde(default = "default_true")]
     pub simulation_required: bool,
     /// Estimated gas units for a single arb transaction (used for profit netting).
@@ -202,16 +208,15 @@ impl Default for ExecutionConfig {
     }
 }
 
-/// Default minimum profit threshold in start-token units (not USD).
+/// Default minimum profit threshold in USD.
 /// The active config file (e.g. avax.toml) always overrides this.
-/// For WAVAX: 0.002 = ~0.06 USD; for USDC: 0.002 = $0.002.
-/// Raise this value if you want to filter out very small opportunities.
-fn default_min_profit_threshold() -> f64 { 0.002 }
+/// 0.5 = $0.50 USD minimum net profit after gas and flash-loan fees.
+fn default_min_profit_threshold() -> f64 { 0.5 }
 fn default_max_position_size() -> f64 { 10000.0 }
 fn default_true() -> bool { true }
 fn default_flashloan_provider() -> String { "AaveV3".to_string() }
-fn default_max_priority_fee_gwei() -> u64 { 50 }
-fn default_max_base_fee_gwei() -> u64 { 100 }
+fn default_max_priority_fee_gwei() -> f64 { 50.0 }
+fn default_max_base_fee_gwei() -> f64 { 100.0 }
 fn default_estimated_gas() -> u64 { 550_000 }
 fn default_v2_fee_bps() -> u32 { 30 }
 fn default_max_profit_pct() -> f64 { 50.0 }

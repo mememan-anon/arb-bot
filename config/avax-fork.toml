@@ -91,7 +91,7 @@ allowed_assets = [
 
 [execution]
 enabled = true
-min_profit_threshold = 0.001  # $0.001 minimum — captures any real cross-dex spread on fork
+min_profit_threshold = 0.01  # Minimum net profit in USD — very low for fork testing
 max_position_size = 100000000.0
 use_flashloan = true
 default_flashloan_provider = "AaveV3"

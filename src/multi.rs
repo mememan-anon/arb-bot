@@ -2,13 +2,18 @@ use anyhow::{Ok, Result};
 use ethers::{
     abi,
     providers::{Http, Provider},
-    types::{H160, U256},
+    types::{Address, H160, U256},
 };
 use ethers_contract::{Contract, Multicall};
 use log::{info, warn};
-use std::{collections::HashMap, sync::Arc, time::Instant};
+use std::{collections::HashMap, str::FromStr, sync::Arc, time::Instant};
 
 use crate::{abi::ABI, pools::Pool};
+
+// Multicall3 is deployed at this address on every EVM chain (including Base).
+// ethers-rs only knows a handful of chain IDs by default, so we always
+// supply the address explicitly instead of relying on auto-detection.
+const MULTICALL3_ADDRESS: &str = "0xcA11bde05977b3631167028862bE2a173976CA11";
 
 #[derive(Default, Debug, Clone)]
 pub struct Reserve {
@@ -24,7 +29,9 @@ pub async fn get_uniswap_v2_reserves(
     let client = Arc::new(client);
 
     let abi = ABI::new();
-    let mut multicall = Multicall::new(client.clone(), None).await?;
+    let multicall_addr: Address = Address::from_str(MULTICALL3_ADDRESS)
+        .expect("Multicall3 address is a valid H160");
+    let mut multicall = Multicall::new(client.clone(), Some(multicall_addr)).await?;
 
     for pool in &pools {
         let contract = Contract::<Provider<Http>>::new(
@@ -42,12 +49,29 @@ pub async fn get_uniswap_v2_reserves(
 
     for i in 0..result.len() {
         let pool = &pools[i];
-        let reserve = result[i].clone();
-        match reserve.unwrap() {
+        let token = match result[i].clone().ok() {
+            Some(t) => t,
+            None => {
+                warn!("Multicall getReserves failed for pool {:?}, skipping", pool.address);
+                continue;
+            }
+        };
+        match token {
             abi::Token::Tuple(response) => {
+                if response.len() < 2 {
+                    continue;
+                }
+                let r0 = match response[0].clone().into_uint() {
+                    Some(v) => v,
+                    None => continue,
+                };
+                let r1 = match response[1].clone().into_uint() {
+                    Some(v) => v,
+                    None => continue,
+                };
                 let reserve_data = Reserve {
-                    reserve0: response[0].clone().into_uint().unwrap(),
-                    reserve1: response[1].clone().into_uint().unwrap(),
+                    reserve0: r0,
+                    reserve1: r1,
                 };
                 reserves.insert(pool.address.clone(), reserve_data);
             }
@@ -84,8 +108,11 @@ pub async fn batch_get_uniswap_v2_reserves(
     let mut reserves: HashMap<H160, Reserve> = HashMap::new();
 
     for handle in handles {
-        let result = handle.await.unwrap();
-        reserves.extend(result.unwrap());
+        match handle.await {
+            std::result::Result::Ok(std::result::Result::Ok(batch)) => reserves.extend(batch),
+            std::result::Result::Ok(Err(e)) => warn!("Reserve batch failed: {e}"),
+            Err(e) => warn!("Reserve batch task panicked: {e}"),
+        }
     }
 
     info!(

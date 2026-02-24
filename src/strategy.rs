@@ -9,7 +9,7 @@ use std::{collections::HashMap, io::Write as _, str::FromStr, sync::Arc};
 use tokio::sync::broadcast::Sender;
 
 use crate::algebra::{fetch_algebra_states, load_algebra_pools_from_v3_csv};
-use crate::uniswapv3cl::{fetch_full_uniswapv3cl_pools, fetch_uniswapv3cl_states, load_uniswapv3cl_pools_from_csv};
+use crate::uniswapv3cl::{fetch_full_uniswapv3cl_pools, fetch_uniswapv3cl_states, load_uniswapv3cl_full_from_csv};
 use crate::lfj::{fetch_lfj_states, load_lfj_pools_from_csv, LFJState};
 use crate::bundler::Bundler;
 use crate::config::{Config, TokenConfig};
@@ -20,8 +20,9 @@ use crate::paths::{generate_triangular_paths_mixed, generate_cross_dex_paths};
 use crate::pools::{load_all_pools_from_v2, AnyPool, PoolType};
 use crate::simulator::UniswapV2Simulator;
 use crate::streams::Event;
-use crate::utils::get_touched_pool_reserves;
+use crate::utils::{get_touched_pool_reserves, get_touched_v3cl_pools};
 use dashmap::DashMap;
+use std::collections::HashSet;
 
 pub async fn event_handler(
     provider: Arc<Provider<Ws>>,
@@ -120,24 +121,30 @@ pub async fn event_handler(
 
     // ── UniswapV3 CL pools ──────────────────────────────────────────────
     let mut v3cl_pools_full = Vec::new();
-    let mut v3cl_pools_info = Vec::new();
+    let v3cl_min_liquidity: u64 = config
+        .dexes
+        .uniswapv3cl
+        .as_ref()
+        .map(|c| c.min_liquidity)
+        .unwrap_or(0);
 
     if let Some(rv3) = config.dexes.uniswapv3cl.as_ref() {
         if rv3.enabled {
-            match load_uniswapv3cl_pools_from_csv(cache_dir) {
-                Ok(pools) => {
-                    info!("Loading full data for {} UniswapV3CL pools...", pools.len());
-                    v3cl_pools_info = pools;
+            match load_uniswapv3cl_full_from_csv(cache_dir) {
+                Ok(pools_static) => {
+                    info!("Loading live state for {} UniswapV3CL pools (slot0+liquidity only)...", pools_static.len());
                     v3cl_pools_full = fetch_full_uniswapv3cl_pools(
                         provider.clone(),
-                        &v3cl_pools_info,
+                        pools_static,
                     ).await;
-                    let before_v3cl = v3cl_pools_full.len();
-                    v3cl_pools_full.retain(|p| !p.liquidity.is_zero());
+                    let in_range = v3cl_pools_full.iter()
+                        .filter(|p| p.liquidity.as_u128() >= v3cl_min_liquidity.max(1) as u128)
+                        .count();
                     info!(
-                        "Loaded {} UniswapV3CL pools fully ({} with liquidity > 0)",
-                        before_v3cl,
-                        v3cl_pools_full.len()
+                        "Loaded {} UniswapV3CL pools ({} above liquidity floor {} at startup)",
+                        v3cl_pools_full.len(),
+                        in_range,
+                        v3cl_min_liquidity,
                     );
                 }
                 Err(e) => {
@@ -218,6 +225,11 @@ pub async fn event_handler(
 
     info!("Total paths across all start tokens: {}", all_paths.len());
     let paths = all_paths;
+
+    // Build a fast-lookup set of all tracked V3CL pool addresses.
+    // Used every block to filter the eth_getLogs Swap results down to only
+    // pools we care about, avoiding state fetches for untracked pools.
+    let v3cl_pool_set: HashSet<H160> = v3cl_pools_full.iter().map(|p| p.address).collect();
 
     let blacklist_tokens = get_blacklist_tokens(&config.chain.blacklisted_tokens);
 
@@ -399,22 +411,39 @@ pub async fn event_handler(
                         }
                     }
 
-                    // 1b. Update UniswapV3CL states
-                    if !v3cl_pools_info.is_empty() {
-                        let states = fetch_uniswapv3cl_states(provider.clone(), &v3cl_pools_info).await;
-                        for (addr, state) in states {
-                            if let Some(pool) = algebra_pools_map.get_mut(&addr) {
-                                pool.sqrt_price_x96 = state.sqrt_price_x96;
-                                pool.liquidity = state.liquidity;
-                                pool.tick = state.tick;
-                                if state.fee > 0 {
-                                    pool.fee = state.fee;
+                    // 1b. Update UniswapV3CL states — event-driven:
+                    // Query which pools had a Swap this block (one eth_getLogs call),
+                    // then only fetch slot0+liquidity for those pools.
+                    let mut v3cl_swapped: HashSet<H160> = HashSet::new();
+                    if !v3cl_pools_full.is_empty() {
+                        v3cl_swapped =
+                            match get_touched_v3cl_pools(provider.clone(), block.block_number).await {
+                                Ok(s) => s.into_iter().filter(|a| v3cl_pool_set.contains(a)).collect(),
+                                Err(e) => {
+                                    if !is_unknown_block_error(&e) {
+                                        info!("get_touched_v3cl_pools error: {:?}", e);
+                                    }
+                                    HashSet::new()
+                                }
+                            };
+
+                        if !v3cl_swapped.is_empty() {
+                            let pools_to_refresh: Vec<_> = v3cl_pools_full
+                                .iter()
+                                .filter(|p| v3cl_swapped.contains(&p.address))
+                                .cloned()
+                                .collect();
+                            let states = fetch_uniswapv3cl_states(provider.clone(), &pools_to_refresh).await;
+                            for (addr, state) in states {
+                                if let Some(pool) = algebra_pools_map.get_mut(&addr) {
+                                    pool.sqrt_price_x96 = state.sqrt_price_x96;
+                                    pool.liquidity = state.liquidity;
+                                    pool.tick = state.tick;
+                                    if state.fee > 0 { pool.fee = state.fee; }
                                 }
                             }
                         }
                     }
-
-                    // 1c. Update LFJ aggregate reserves
                     if !lfj_pools_full.is_empty() {
                         lfj_states_map = fetch_lfj_states(provider.clone(), &lfj_pools_full).await;
                     }
@@ -438,11 +467,15 @@ pub async fn event_handler(
                             touched_pools.push(address);
                         }
                     }
-                    if !touched_pools.is_empty() {
-                        info!("Touched {} V2 pools", touched_pools.len());
-                    } else {
-                        info!("No touched V2 pools; evaluating all paths this block.");
-                    }
+
+                    // Per-block stats: subscribed pools, how many swapped, V2 touched
+                    info!(
+                        "[stats] block={} | V3CL: {}/{} swapped | V2: {} touched",
+                        block.block_number,
+                        v3cl_swapped.len(),
+                        v3cl_pool_set.len(),
+                        touched_pools.len(),
+                    );
 
                     // Check all paths grouped by start token
                     for start_token in &config.start_tokens {
@@ -463,18 +496,10 @@ pub async fn event_handler(
                         let reserves_snapshot: HashMap<H160, Reserve> =
                                     reserves.iter().map(|r| (*r.key(), r.value().clone())).collect();
 
-                        let evaluate_all = touched_pools.is_empty();
+                        let evaluate_all = touched_pools.is_empty() && v3cl_swapped.is_empty();
                         for &idx in token_path_indices {
                             let path = &paths[idx];
-                            
-                            // Check if path is touched either by V2 update OR involves Algebra (which we update every block)
-                            // Ideally track touched Algebra pools too. For now assume Algebra updates might affect any path using them.
-                            // Or just simulate all paths if Algebra is enabled? No, too slow.
-                            // Let's assume we simulate if any pool in path is touched.
-                            // For Algebra, we updated all of them, so we should check if values CHANGED.
-                            // But here we didn't track changes explicitly.
-                            // Let's assume we simulate if path has Algebra pool OR touched V2 pool.
-                            
+
                             let has_algebra = path.get_pool(0).pool_type.is_cl()
                                 || path.get_pool(1).pool_type.is_cl()
                                 || path.get_pool(2).pool_type.is_cl();
@@ -482,10 +507,16 @@ pub async fn event_handler(
                             let has_lfj = path.get_pool(0).pool_type.is_lfj()
                                 || path.get_pool(1).pool_type.is_lfj()
                                 || path.get_pool(2).pool_type.is_lfj();
-                            
+
                             let is_touched_v2 = touched_pools
                                 .iter()
                                 .any(|pool| path.has_pool(pool));
+
+                            // Only simulate CL paths where at least one pool swapped this block.
+                            let is_touched_cl = has_algebra && [0u8, 1u8, 2u8].iter().any(|&i| {
+                                let p = path.get_pool(i);
+                                p.pool_type.is_cl() && v3cl_swapped.contains(&p.address)
+                            });
 
                             if force_seeded_v2
                                 && !seed_addrs.is_empty()
@@ -494,7 +525,28 @@ pub async fn event_handler(
                                 continue;
                             }
 
-                            if evaluate_all || has_algebra || has_lfj || is_touched_v2 {
+                            // Skip paths containing CL pools that are currently out of range
+                            // (liquidity == 0 at the current tick). Pools are checked every
+                            // block via fetch_uniswapv3cl_states — they re-activate automatically
+                            // when price re-enters their LP range.
+                            if has_algebra {
+                                let cl_in_range = [0u8, 1u8, 2u8].iter().all(|&hop| {
+                                    let p = path.get_pool(hop);
+                                    if p.pool_type.is_cl() {
+                                        algebra_pools_map
+                                            .get(&p.address)
+                                            .map(|s| s.liquidity.as_u128() >= v3cl_min_liquidity.max(1) as u128)
+                                            .unwrap_or(false)
+                                    } else {
+                                        true
+                                    }
+                                });
+                                if !cl_in_range {
+                                    continue;
+                                }
+                            }
+
+                            if evaluate_all || is_touched_cl || has_lfj || is_touched_v2 {
                                 let one_token_in = U256::from(1);
 
                                 let simulated = path.simulate_mixed_path(one_token_in, &reserves_snapshot, &algebra_pools_map, &lfj_states_map);
@@ -607,12 +659,20 @@ pub async fn event_handler(
                                 };
 
                                 // ── Detection-time threshold filter ──────────────────────────────
-                                // Only surface (log + execute) paths whose profit exceeds
-                                // min_profit_threshold.  This fires at detection, not just at
-                                // execution, so the log is never cluttered with sub-threshold hits.
+                                // Only surface (log + execute) paths whose net profit exceeds
+                                // min_profit_threshold (in USD).  We price the start token via the
+                                // gas-oracle pool so the threshold is token-agnostic.
                                 let profit_in_token_f64 = (profit_u256.as_u128() as f64)
                                     / ((10_u128.pow(start_token.decimals as u32)) as f64);
-                                if profit_in_token_f64 < config.execution.min_profit_threshold {
+                                let token_price_usd = get_token_price_usd(
+                                    &config, &active_pools, &reserves_snapshot, start_token,
+                                );
+                                let profit_usd = if token_price_usd > 0.0 {
+                                    profit_in_token_f64 * token_price_usd
+                                } else {
+                                    profit_in_token_f64
+                                };
+                                if profit_usd < config.execution.min_profit_threshold {
                                     continue;
                                 }
 
@@ -709,7 +769,7 @@ pub async fn event_handler(
                                 }
 
                                 // Check if profit meets threshold
-                                if executor.check_profit_threshold(profit_u256, start_token) {
+                                if executor.check_profit_threshold(profit_u256, start_token, token_price_usd) {
                                     // opt.0 is in whole tokens; convert to raw atoms so the
                                     // flash-loan contract receives the correct borrow amount.
                                     let amount_in_raw = opt.0 * decimal_multipliers[&start_address];
@@ -839,6 +899,111 @@ pub async fn event_handler(
 
 fn is_unknown_block_error(err: &anyhow::Error) -> bool {
     err.to_string().contains("Unknown block")
+}
+
+/// Return the USD price of one whole unit of `token` by reading the on-chain
+/// gas-oracle pool (or any V2 pool that bridges token ↔ stable).
+///
+/// Returns:
+/// - `1.0`  if `token` is the configured stable coin
+/// - native token price (e.g. 3000.0 for WETH) when `token` is the gas token
+/// - price derived from the first V2 reserve that pairs `token` against stable
+/// - `0.0`  when no price can be derived (caller falls back to raw token units)
+fn get_token_price_usd(
+    config: &Config,
+    pools: &HashMap<H160, AnyPool>,
+    reserves: &HashMap<H160, Reserve>,
+    token: &TokenConfig,
+) -> f64 {
+    use std::str::FromStr;
+
+    let stable_addr = match config.gas.stable_address.as_deref().and_then(|s| H160::from_str(s).ok()) {
+        Some(a) if a != H160::zero() => a,
+        _ => return 0.0,
+    };
+    let token_addr = match H160::from_str(&token.address) {
+        Ok(a) => a,
+        Err(_) => return 0.0,
+    };
+
+    // 1. Token IS the stable → $1.00
+    if token_addr == stable_addr {
+        return 1.0;
+    }
+
+    // 2. Token is the gas-oracle token (e.g. WETH/WAVAX) → read gas pool price
+    if let Some(gas_token_str) = config.gas.token_address.as_deref() {
+        if let Ok(gas_token_addr) = H160::from_str(gas_token_str) {
+            if token_addr == gas_token_addr {
+                if let Some(gas_pool_str) = config.gas.pool_address.as_deref() {
+                    if let Ok(gas_pool_addr) = H160::from_str(gas_pool_str) {
+                        if let Some(pool) = pools.get(&gas_pool_addr) {
+                            let tok_is_t0 = config.gas.token_is_token0.unwrap_or(false);
+                            let price: f64 = match &pool.pool_type {
+                                PoolType::V2(v2) => {
+                                    if let Some(r) = reserves.get(&gas_pool_addr) {
+                                        UniswapV2Simulator::reserves_to_price(
+                                            r.reserve0, r.reserve1,
+                                            v2.decimals0, v2.decimals1,
+                                            tok_is_t0,
+                                        )
+                                    } else { 0.0 }
+                                }
+                                PoolType::Algebra(alg) | PoolType::UniswapV3CL(alg) => {
+                                    let sqrt_p = alg.sqrt_price_x96;
+                                    if sqrt_p.is_zero() { 0.0 } else {
+                                        let q96 = U256::from(1u64) << 96;
+                                        let p_f = (sqrt_p.as_u128() as f64)
+                                            / (q96.as_u128() as f64);
+                                        let price_raw = p_f * p_f;
+                                        let adj = (10.0f64).powi(
+                                            alg.decimals0 as i32 - alg.decimals1 as i32,
+                                        );
+                                        let p = price_raw * adj;
+                                        if tok_is_t0 { p } else if p == 0.0 { 0.0 } else { 1.0 / p }
+                                    }
+                                }
+                                PoolType::LFJ(_) => 0.0,
+                            };
+                            if price > 0.0 && price.is_finite() {
+                                return price;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Search V2 reserves for any pool that pairs token ↔ stable
+    for (addr, reserve) in reserves.iter() {
+        if let Some(pool) = pools.get(addr) {
+            if let PoolType::V2(v2) = &pool.pool_type {
+                let t0 = pool.token0;
+                let t1 = pool.token1;
+                let (tok_is_t0, pair_found) = if t0 == token_addr && t1 == stable_addr {
+                    (true, true)
+                } else if t1 == token_addr && t0 == stable_addr {
+                    (false, true)
+                } else {
+                    (false, false)
+                };
+                if !pair_found { continue; }
+                // reserves_to_price(r0, r1, dec0, dec1, token_is_token0) gives price of
+                // token (in stable units) — i.e. USD per whole token.
+                let price = UniswapV2Simulator::reserves_to_price(
+                    reserve.reserve0, reserve.reserve1,
+                    v2.decimals0, v2.decimals1,
+                    tok_is_t0,
+                );
+                if price > 0.0 && price.is_finite() {
+                    return price;
+                }
+            }
+        }
+    }
+
+    0.0 // unknown — caller falls back to token-unit comparison
 }
 
 fn estimate_gas_cost_in_start_token(

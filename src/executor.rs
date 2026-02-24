@@ -28,47 +28,37 @@ impl Executor {
         Self { config }
     }
 
-    /// Check if the profit meets the minimum threshold
-    pub fn check_profit_threshold(&self, profit_raw: U256, start_token: &TokenConfig) -> bool {
+    /// Check if the profit meets the minimum threshold.
+    /// `token_price_usd` is the USD price of one whole start token (e.g. 3000.0 for WETH).
+    /// Pass `0.0` if the price is unknown — the check will fall back to raw token units.
+    pub fn check_profit_threshold(&self, profit_raw: U256, start_token: &TokenConfig, token_price_usd: f64) -> bool {
         if !self.config.execution.enabled {
             return false;
         }
 
-        // Convert raw profit to token units.
-        // NOTE: min_profit_threshold is denominated in USD, but this comparison only
-        // produces the correct result when start_token is a USD stablecoin (USDC, USDT,
-        // etc.).  If start_token is a non-stable asset (e.g. WAVAX, WBTC) the threshold
-        // check will be wrong by the asset's USD price.  A price-oracle conversion is
-        // needed to fix this properly.
+        // Convert raw profit to whole token units.
         let profit_in_token = (profit_raw.as_u128() as f64)
             / ((10_u128.pow(start_token.decimals as u32)) as f64);
 
-        let symbol_upper = start_token.symbol.to_uppercase();
-        let is_likely_stable = symbol_upper.contains("USD")
-            || symbol_upper.contains("DAI")
-            || symbol_upper.contains("FRAX")
-            || symbol_upper.contains("MIM");
-        if !is_likely_stable {
-            warn!(
-                "Profit threshold check for non-stablecoin start token '{}': \
-                 comparison is in token units, not USD — threshold may be inaccurate",
-                start_token.symbol
-            );
-        }
-
-        let profit_usd = profit_in_token;
+        // Convert to USD.  When token_price_usd == 0.0 (unknown price), fall back to
+        // treating token units as USD — correct for stablecoins, conservative otherwise.
+        let profit_usd = if token_price_usd > 0.0 {
+            profit_in_token * token_price_usd
+        } else {
+            profit_in_token
+        };
 
         let threshold = self.config.execution.min_profit_threshold;
 
         if profit_usd < threshold {
             info!(
-                "Profit ${:.2} below threshold ${:.2}, skipping execution",
+                "Profit ${:.4} below threshold ${:.4}, skipping execution",
                 profit_usd, threshold
             );
             return false;
         }
 
-        info!("Profit ${:.2} exceeds threshold ${:.2}", profit_usd, threshold);
+        info!("Profit ${:.4} exceeds threshold ${:.4}", profit_usd, threshold);
         true
     }
 
@@ -112,13 +102,15 @@ impl Executor {
         let max_base_fee_multiplier = 2; // Allow base fee to go up to 2x current
 
         // Priority fee (tip to validators)
-        let max_priority_fee = U256::from(max_priority_fee_gwei) * *GWEI;
+        // max_priority_fee_gwei is f64 (e.g. 0.01 gwei on Base L2).
+        // Convert: gwei * 1e9 = wei.
+        let max_priority_fee = U256::from((max_priority_fee_gwei * 1e9) as u128);
 
         // Max fee = (base_fee * multiplier) + priority_fee
         let max_fee_per_gas = (current_base_fee * max_base_fee_multiplier) + max_priority_fee;
 
         // Cap the max fee
-        let max_base_fee_cap = U256::from(self.config.execution.max_base_fee_gwei) * *GWEI;
+        let max_base_fee_cap = U256::from((self.config.execution.max_base_fee_gwei * 1e9) as u128);
         let max_fee_per_gas = if max_fee_per_gas > max_base_fee_cap {
             warn!(
                 "Calculated max fee {} exceeds cap {}, using cap",
