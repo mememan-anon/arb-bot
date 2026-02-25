@@ -28,7 +28,7 @@ impl SolidlyStableSimulator {
                 break;
             }
             let y_new = y - f_val / f_der;
-            if (y_new - y).abs() < 1e-18 {
+            if (y_new - y).abs() < 1e-12 {
                 return y_new;
             }
             y = y_new;

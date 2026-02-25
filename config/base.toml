@@ -7,9 +7,12 @@ wss_url   = ""
 wss_urls  = []
 
 cache_dir = "base"
-# Output cap: real arb is ~1.001-1.02x; dust fakes are enormous.
-max_profit_pct = 80.0
-blacklisted_tokens = []
+# Output cap: real arb is ~1.001-1.02x; anything above ~5x is honeypot/simulation error.
+# Formula: max allowed return = max_profit_pct / 10  (so 50 → 5x cap)
+max_profit_pct = 50.0
+blacklisted_tokens = [
+  "0x5ab3d4c385b400f3abb49e80de2faf6a88a7b691",  # FLOCK — fee-on-transfer (tax token)
+]
 
 # ── Start tokens ────────────────────────────────────────────────────────────
 
@@ -42,9 +45,15 @@ price_pool = "0xfBB6Eed8e7aa03B138556eeDaF5D271A5E1e43ef"  # Uniswap V3 USDC/cbB
 # Aerodrome stable pools use version=4, fee=5 (0.05%)
 [dexes.v2]
 enabled = true
-factories = ["0x8909Dc15e40173Ff4699343b6eb8132c65e18eC6"]  # Uniswap V2 Factory (Base)
-routers = ["0x4752ba5dbc23f44d87826276bf6fd6b1c372ad24"]    # Uniswap V2 Router02 (Base)
-from_blocks = [0]
+factories = [
+  "0x8909Dc15e40173Ff4699343b6eb8132c65e18eC6",  # Uniswap V2 Factory (Base)
+  "0x02a84c1b3BBD7401a5f7fa98a384EBC70bB5749E",  # PancakeSwap V2 Factory (Base)
+]
+routers = [
+  "0x4752ba5dbc23f44d87826276bf6fd6b1c372ad24",  # Uniswap V2 Router02 (Base)
+  "0x8cFe327CEc66d1C090Dd72bd0FF11d690C33a2Eb",  # PancakeSwap V2 Router (Base)
+]
+from_blocks = [0, 0]
 direct_pair = true
 
 [dexes.v3]
@@ -68,8 +77,17 @@ quoter = ""
 # Cached to: cache/base/.cached-v3cl-pools.csv
 [dexes.uniswapv3cl]
 enabled = true
+# Primary factory (Uniswap V3 — backward compat single-factory field)
 factory = "0x33128a8fC17869897dcE68Ed026d694621f6FDfD"   # Uniswap V3 Factory (Base)
+# Additional V3-compatible factories (same slot0/swap ABI — pool data lands in same CSV)
+factories = [
+  "0x0BFbCF9fa4f9C56B0F40a672E3D1B50B6eD5B5F8",  # PancakeSwap V3 Factory (Base)
+]
+# Routers indexed parallel to factories[] above
 router  = "0x2626664c2603336E57B271c5C0b26F421741e481"   # Uniswap V3 SwapRouter02 (Base)
+routers = [
+  "0x1b81D678ffb9C0263b24A97847620C99d213eB14",  # PancakeSwap V3 SmartRouter (Base)
+]
 quoter  = "0x3d4e44Eb1374240CE5F1B136041212501e4a0139"   # Uniswap V3 QuoterV2 (Base)
 
 # Raw Uniswap V3 liquidity floor (NOT USD). Filters dust with near-zero active.
@@ -85,6 +103,16 @@ min_liquidity = 1
 [dexes.uniswapv4cl]
 enabled = false
 pool_manager = "0x498581fF718922c3f8e6A244956aF099B2652b2b"  # Uniswap V4 PoolManager (Base)
+
+# PancakeSwap Infinity (V4) — singleton PoolManager architecture with Flash Accounting.
+# Two pool types: CL (concentrated liquidity) and Bin (Liquidity Book).
+# Requires new bot contract path (_swapInfinityPoolManager) — NOT yet implemented.
+# Contract addresses from: github.com/pancakeswap/infinity-core/script/config/base-mainnet.json
+[dexes.pancakeswap_infinity]
+enabled = false
+vault         = "0x238a358808379702088667322f80aC48bAd5e6c4"  # PCS Infinity Vault (Base)
+cl_pool_manager  = "0xa0FfB9c1CE1Fe56963B0321B32E7A0302114058b"  # PCS Infinity CLPoolManager (Base)
+bin_pool_manager = "0xC697d2898e0D09264376196696c51D7aBbbAA4a9"  # PCS Infinity BinPoolManager (Base)
 
 [dexes.lfj]
 enabled = false
@@ -120,13 +148,12 @@ allowed_assets = [
   ]
 
 # ── Execution ─────────────────────────────────────────────────────────────────
-# contract_address is read from BOT_ADDRESS in .env (keep secrets out of this file)
 [execution]
 enabled = true
 min_profit_threshold = 0.5      # Minimum net profit in USD (0.0 = log everything; raise after testing)
 max_position_size = 100000000.0
 use_flashloan = true
-default_flashloan_provider = "AaveV3"
+default_flashloan_provider = "Balancer"
 max_priority_fee_gwei = 0.01     # Base L2: priority fees are tiny
 max_base_fee_gwei = 5            # Base L2: very cheap
 simulation_required = true

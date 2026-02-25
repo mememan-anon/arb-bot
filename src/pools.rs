@@ -18,7 +18,7 @@ use std::{path::Path, str::FromStr, sync::Arc};
 pub enum PoolType {
     V2(Pool),
     Algebra(AlgebraPoolFull),
-    /// UniswapV3 CL (any V3 fork: Pharaoh, Ramses, Shadow, etc.) — slot0() ABI, ppm fee
+    /// UniswapV3 CL (any V3 fork: Aerodrome CL, PancakeSwap V3, etc.) — slot0() ABI, ppm fee
     UniswapV3CL(AlgebraPoolFull),
     /// LFJ Liquidity Book V2.1/V2.2 — bin-based AMM, simulated with aggregate reserves.
     LFJ(LFJPoolInfo),

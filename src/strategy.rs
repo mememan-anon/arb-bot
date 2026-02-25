@@ -7,12 +7,13 @@ use ethers::{
 use log::{info, warn};
 use serde_json::json;
 use std::{collections::HashMap, io::Write as _, str::FromStr, sync::Arc};
+use std::sync::RwLock;
 use tokio::sync::broadcast::Sender;
 
 use crate::algebra::{fetch_algebra_states, load_algebra_pools_from_v3_csv};
 use crate::uniswapv3cl::{enrich_tick_data, fetch_full_uniswapv3cl_pools, fetch_uniswapv3cl_states, fetch_v3cl_oracle_pools, load_uniswapv3cl_full_from_csv};
 use crate::lfj::{fetch_lfj_states, load_lfj_pools_from_csv, LFJState};
-use crate::bundler::Bundler;
+use crate::bundler::{Bundler, Flashloan};
 use crate::config::{Config, TokenConfig};
 use crate::constants::{get_blacklist_tokens, Env, WEI};
 use crate::executor::{ExecutionParams, Executor};
@@ -33,7 +34,7 @@ abigen!(
 
 /// Fetch USD prices for all start-token addresses from the Aave V3 price oracle.
 /// Returns 8-decimal prices converted to f64 (e.g. 3000.0 for $3000).
-/// Called at startup and refreshed every ~5 minutes (300 Base blocks ≈ 10 min).
+/// Called at startup and refreshed every ~10 minutes (300 Base blocks ≈ 10 min).
 async fn fetch_aave_oracle_prices(
     config: &Config,
     provider: Arc<Provider<Ws>>,
@@ -81,6 +82,7 @@ pub async fn event_handler(
 ) {
     let env = Env::from_config(&config);
     let debug_spreads = std::env::var("BOT_DEBUG_SPREADS").ok().as_deref() == Some("1");
+    let _debug_stale = std::env::var("BOT_DEBUG_STALE").ok().as_deref() == Some("1");
     let force_seeded_v2 = std::env::var("BOT_FORCE_V2_TRI").ok().as_deref() == Some("1");
     // Debug seed pools for path filtering (used with BOT_FORCE_V2_TRI=1).
     // Set BOT_SEED_P1 / BOT_SEED_P2 / BOT_SEED_P3 to the pool addresses you want to isolate.
@@ -315,6 +317,40 @@ pub async fn event_handler(
 
     let blacklist_tokens = get_blacklist_tokens(&config.chain.blacklisted_tokens);
 
+    // Runtime auto-blacklist: populated when a simulation fails with
+    // "transfer amount exceeds balance" (fee-on-transfer tokens).
+    // Arc<RwLock<…>> allows many rayon readers with rare writer on failure.
+    let runtime_blacklist: Arc<RwLock<HashSet<H160>>> = Arc::new(RwLock::new(HashSet::new()));
+
+    // Tick-enrich backoff for pools that repeatedly return no new tick data.
+    // (Currently only used by the periodic re-enrichment; confirm-phase enrichment
+    // is bypassed in favour of fast-path eth_call simulation.)
+    const _TICK_ENRICH_ZERO_THRESHOLD: u8 = 3;
+    const _TICK_ENRICH_BACKOFF_BLOCKS: u64 = 20;
+    let mut _tick_enrich_zero_streak: HashMap<H160, u8> = HashMap::new();
+    let tick_enrich_backoff_until: HashMap<H160, u64> = HashMap::new();
+
+    // Path-level cooldown for repeated simulation slippage failures.
+    // This suppresses paths that repeatedly pass detection but revert with
+    // `slippage` during eth_call simulation (common with fast-moving V2 paths).
+    const SLIPPAGE_FAIL_THRESHOLD: u8 = 2;
+    const SLIPPAGE_COOLDOWN_BLOCKS: u64 = 3;
+    let mut slippage_fail_count: HashMap<usize, u8> = HashMap::new();
+    let mut slippage_cooldown_until: HashMap<usize, u64> = HashMap::new();
+    // Path-level stale-signal backoff: paths that confirm as stale N times in a row
+    // are suppressed from the initial scan for a short window, eliminating wasted
+    // per-path RPC confirm calls for persistently-dead signals.
+    const _STALE_STREAK_THRESHOLD: u8 = 3;
+    const _STALE_BACKOFF_BLOCKS: u64 = 10;
+    let mut stale_streak: HashMap<usize, u8> = HashMap::new();
+    let mut stale_backoff_until: HashMap<usize, u64> = HashMap::new();
+
+    // Periodic tick re-enrichment: every N blocks, re-enrich CL pools
+    // whose current tick has drifted outside their enriched tick_data window.
+    const TICK_REENRICH_INTERVAL: u64 = 50;
+    let mut blocks_since_reenrich: u64 = 0;
+
+    // Active pools participating in non-blacklisted paths.
     let mut active_pools = HashMap::new();
 
     for path in &paths {
@@ -470,23 +506,16 @@ pub async fn event_handler(
     let mut event_receiver = event_sender.subscribe();
 
     // ── Chainlink/Aave oracle price cache ────────────────────────────────────
-    // Refreshed at startup and every 300 blocks (~5 min on Base).
+    // Fetched once at startup.
     // Used as final fallback in get_token_price_usd when no on-chain pool
     // has a token/stable pair loaded.
-    let mut oracle_prices = fetch_aave_oracle_prices(&config, provider.clone()).await;
-    let mut block_counter: u64 = 0;
+    let oracle_prices = fetch_aave_oracle_prices(&config, provider.clone()).await;
 
     loop {
         match event_receiver.recv().await {
             Ok(event) => match event {
                 Event::Block(block) => {
                     info!("{:?}", block);
-
-                    // Refresh Chainlink/Aave oracle prices every 300 blocks (~5 min)
-                    block_counter += 1;
-                    if block_counter % 300 == 0 {
-                        oracle_prices = fetch_aave_oracle_prices(&config, provider.clone()).await;
-                    }
 
                     // 1. Event-driven CL state refresh (Algebra + V3CL + LFJ).
                     //
@@ -551,6 +580,39 @@ pub async fn event_handler(
                         }
                     }
 
+                    // 1b-extra. Periodic tick re-enrichment for drifted CL pools.
+                    // Every TICK_REENRICH_INTERVAL blocks, re-enrich pools whose current
+                    // tick has moved outside their enriched tick_data window.  This keeps
+                    // the scan-phase simulation reasonably accurate without per-block RPC cost.
+                    blocks_since_reenrich += 1;
+                    if blocks_since_reenrich >= TICK_REENRICH_INTERVAL {
+                        blocks_since_reenrich = 0;
+                        let mut drifted: Vec<_> = algebra_pools_map
+                            .values()
+                            .filter(|p| {
+                                if p.tick_data.is_empty() { return false; }
+                                let min_key = *p.tick_data.keys().min().unwrap();
+                                let max_key = *p.tick_data.keys().max().unwrap();
+                                p.tick < min_key || p.tick > max_key
+                            })
+                            .cloned()
+                            .collect();
+                        if !drifted.is_empty() {
+                            info!(
+                                "[tick-reenrich] block={} re-enriching {} drifted CL pool(s)",
+                                block.block_number, drifted.len()
+                            );
+                            enrich_tick_data(provider.clone(), &mut drifted).await;
+                            for refreshed in drifted {
+                                if let Some(pool) = algebra_pools_map.get_mut(&refreshed.address) {
+                                    if !refreshed.tick_data.is_empty() {
+                                        pool.tick_data = refreshed.tick_data;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // 1c. Refresh LFJ pools — event-driven via Swap topic filtering.
                     // LFJ Swap topic: keccak256("Swap(address,address,uint24,bytes32,bytes32,uint24,uint128,uint128)")
                     if !lfj_pools_full.is_empty() {
@@ -598,6 +660,65 @@ pub async fn event_handler(
                         touched_pools.len(),
                     );
 
+                    let touched_pools_set: HashSet<H160> = touched_pools.iter().copied().collect();
+                    let reserves_snapshot: HashMap<H160, Reserve> = reserves.clone();
+
+                    // Detection gas model aligned with execution model:
+                    //   max_fee = base_fee*2 + priority_fee
+                    // We use this conservative effective gas price during ranking.
+                    let max_priority_fee_wei = U256::from((config.execution.max_priority_fee_gwei * 1e9) as u128);
+                    let max_base_fee_cap_wei = U256::from((config.execution.max_base_fee_gwei * 1e9) as u128);
+                    let effective_gas_price = std::cmp::min(
+                        (block.next_base_fee * U256::from(2u64)).saturating_add(max_priority_fee_wei),
+                        max_base_fee_cap_wei,
+                    );
+
+                    let runtime_blacklist_snapshot = runtime_blacklist
+                        .read()
+                        .map(|bl| bl.clone())
+                        .unwrap_or_default();
+
+                    let scan_block = block.block_number.as_u64();
+                    // Snapshot CL pools to exclude from the initial rayon scan.
+                    // Only pools with TRULY empty tick_data are skipped — they produce
+                    // phantom spreads because calculate_amount_out assumes constant
+                    // liquidity when no ticks are present.
+                    //
+                    // Pools whose tick has drifted outside the enriched window are NOT
+                    // skipped: the confirm branch re-enriches them before execution,
+                    // and slight inaccuracy at scan time is acceptable (produces mild
+                    // over/underestimates, not phantoms).
+                    let cl_pool_skip_set: HashSet<H160> = tick_enrich_backoff_until
+                        .iter()
+                        .filter(|(_, &until)| scan_block <= until)
+                        .map(|(addr, _)| *addr)
+                        .chain(
+                            algebra_pools_map
+                                .iter()
+                                .filter(|(_, p)| p.tick_data.is_empty())
+                                .map(|(addr, _)| *addr),
+                        )
+                        .collect();
+
+                    // Count drifted pools (OOR but not skipped) for diagnostics
+                    let cl_oor_count = algebra_pools_map
+                        .values()
+                        .filter(|p| {
+                            if p.tick_data.is_empty() { return false; }
+                            let min_key = *p.tick_data.keys().min().unwrap();
+                            let max_key = *p.tick_data.keys().max().unwrap();
+                            p.tick < min_key || p.tick > max_key
+                        })
+                        .count();
+
+                    info!(
+                        "[pipeline] block={} | CL pools: {} total, {} skip-set, {} OOR (not skipped)",
+                        block.block_number,
+                        algebra_pools_map.len(),
+                        cl_pool_skip_set.len(),
+                        cl_oor_count,
+                    );
+
                     // Check all paths grouped by start token
                     for start_token in &config.start_tokens {
                         let start_address = match H160::from_str(&start_token.address) {
@@ -611,9 +732,6 @@ pub async fn event_handler(
                             None => continue,
                         };
 
-                        // Create snapshot of V2 reserves for simulation
-                        let reserves_snapshot: HashMap<H160, Reserve> = reserves.clone();
-
                         let evaluate_all = touched_pools.is_empty() && cl_swapped.is_empty();
 
                         // Parallel spread evaluation using rayon.
@@ -624,6 +742,18 @@ pub async fn event_handler(
                             .filter_map(|&idx| {
                             let path = &paths[idx];
 
+                            // Skip paths that contain runtime-detected FoT tokens.
+                            if !runtime_blacklist_snapshot.is_empty() {
+                                let path_has_runtime_blacklisted = (0..path.nhop).any(|hop| {
+                                    let pool = path.get_pool(hop);
+                                    runtime_blacklist_snapshot.contains(&pool.token0)
+                                        || runtime_blacklist_snapshot.contains(&pool.token1)
+                                });
+                                if path_has_runtime_blacklisted {
+                                    return None;
+                                }
+                            }
+
                             let has_algebra = path.get_pool(0).pool_type.is_cl()
                                 || path.get_pool(1).pool_type.is_cl()
                                 || path.get_pool(2).pool_type.is_cl();
@@ -632,7 +762,7 @@ pub async fn event_handler(
                                 || path.get_pool(1).pool_type.is_lfj()
                                 || path.get_pool(2).pool_type.is_lfj();
 
-                            let is_touched_v2 = touched_pools
+                            let is_touched_v2 = touched_pools_set
                                 .iter()
                                 .any(|pool| path.has_pool(pool));
 
@@ -661,6 +791,15 @@ pub async fn event_handler(
                                     }
                                 });
                                 if !cl_in_range {
+                                    return None;
+                                }
+                                // Skip paths containing CL pools with empty tick_data or in
+                                // tick-enrich backoff — they generate phantom spreads because
+                                // the CL simulator assumes constant liquidity with no tick data.
+                                if (0..path.nhop).any(|i| {
+                                    let p = path.get_pool(i);
+                                    p.pool_type.is_cl() && cl_pool_skip_set.contains(&p.address)
+                                }) {
                                     return None;
                                 }
                             }
@@ -706,15 +845,6 @@ pub async fn event_handler(
                             continue;
                         }
 
-                        // Estimate gas cost in start token units using configured gas pricing pool.
-                        let gas_cost_in_token = estimate_gas_cost_in_start_token(
-                            &config,
-                            &active_pools, 
-                            &reserves_snapshot,
-                            block.next_base_fee,
-                            start_token,
-                        );
-
                         let mut sorted_spreads: Vec<_> = spreads.iter().collect();
                         sorted_spreads.sort_by_key(|x| x.1);
                         sorted_spreads.reverse();
@@ -734,7 +864,32 @@ pub async fn event_handler(
                         // Process profitable opportunities
                         for spread in sorted_spreads {
                             let path_idx = *spread.0;
+                            let current_block = block.block_number.as_u64();
+                            if let Some(&until_block) = slippage_cooldown_until.get(&path_idx) {
+                                if current_block <= until_block {
+                                    continue;
+                                }
+                                slippage_cooldown_until.remove(&path_idx);
+                                slippage_fail_count.remove(&path_idx);
+                            }
+                            if let Some(&until_block) = stale_backoff_until.get(&path_idx) {
+                                if current_block <= until_block {
+                                    continue;
+                                }
+                                stale_backoff_until.remove(&path_idx);
+                                stale_streak.remove(&path_idx);
+                            }
                             let path = &paths[path_idx];
+
+                            let gas_units_for_path = estimate_gas_units_for_path(path);
+                            let gas_cost_in_wei = effective_gas_price.saturating_mul(U256::from(gas_units_for_path));
+                            let gas_cost_in_token = estimate_gas_cost_in_start_token(
+                                &config,
+                                &active_pools,
+                                &reserves_snapshot,
+                                gas_cost_in_wei,
+                                start_token,
+                            );
                             
                             let opt = path.optimize_amount_in_mixed(
                                 U256::zero(), // ceiling auto-detected by exponential probe
@@ -743,22 +898,22 @@ pub async fn event_handler(
                                 &lfj_states_map,
                             );
                             
-                            // Deduct Aave flashloan premium (5 bps on borrowed principal).
+                            // Deduct flash-loan fee (Aave = 5 bps, Balancer = 0).
                             // opt.0 is now the raw atomic borrow amount (e.g. wei).
-                            let aave_fee_raw =
+                            let fl_fee_raw =
                                 if config.execution.default_flashloan_provider == "AaveV3" {
                                     opt.0
                                         * U256::from(5u64)
                                         / U256::from(10000u64)
                                 } else {
-                                    U256::zero()
+                                    U256::zero() // Balancer: no fee
                                 };
 
                             // Use U256 saturating subtraction to avoid i128 cast overflow.
                             let excess_profit = opt
                                 .1
                                 .saturating_sub(gas_cost_in_token)
-                                .saturating_sub(aave_fee_raw);
+                                .saturating_sub(fl_fee_raw);
 
                             if excess_profit > U256::zero() {
                                 // ── Confirm with fresh on-chain CL state ─────────────────────────
@@ -776,68 +931,27 @@ pub async fn event_handler(
                                     .filter(|p| p.pool_type.is_cl())
                                     .map(|p| p.address)
                                     .collect();
+                                let path_v2_pools: Vec<_> = path_pools_all
+                                    .iter()
+                                    .filter_map(|p| match &p.pool_type {
+                                        PoolType::V2(v2) => Some(v2.clone()),
+                                        _ => None,
+                                    })
+                                    .collect();
 
-                                let (opt, excess_profit) = if !path_cl_addrs.is_empty() {
-                                    // Refresh V3CL pools in the path
-                                    let v3cl_fresh: Vec<_> = v3cl_pools_full
-                                        .iter()
-                                        .filter(|p| path_cl_addrs.contains(&p.address))
-                                        .cloned()
-                                        .collect();
-                                    if !v3cl_fresh.is_empty() {
-                                        let states = fetch_uniswapv3cl_states(provider.clone(), &v3cl_fresh).await;
-                                        for (addr, state) in states {
-                                            if let Some(pool) = algebra_pools_map.get_mut(&addr) {
-                                                pool.sqrt_price_x96 = state.sqrt_price_x96;
-                                                pool.liquidity = state.liquidity;
-                                                pool.tick = state.tick;
-                                            }
-                                        }
-                                    }
-                                    // Refresh Algebra pools in the path
-                                    let algebra_fresh: Vec<_> = algebra_pools_info
-                                        .iter()
-                                        .filter(|p| path_cl_addrs.contains(&p.address))
-                                        .cloned()
-                                        .collect();
-                                    if !algebra_fresh.is_empty() {
-                                        let states = fetch_algebra_states(provider.clone(), &algebra_fresh).await;
-                                        for (addr, state) in states {
-                                            if let Some(pool) = algebra_pools_map.get_mut(&addr) {
-                                                pool.sqrt_price_x96 = state.sqrt_price_x96;
-                                                pool.liquidity = state.liquidity;
-                                                pool.tick = state.tick;
-                                                if state.fee > 0 { pool.fee = state.fee; }
-                                            }
-                                        }
-                                    }
-                                    // Re-optimise with fresh state
-                                    let fresh_opt = path.optimize_amount_in_mixed(
-                                        U256::zero(),
-                                        &reserves_snapshot,
-                                        &algebra_pools_map,
-                                        &lfj_states_map,
-                                    );
-                                    let fresh_aave_fee =
-                                        if config.execution.default_flashloan_provider == "AaveV3" {
-                                            fresh_opt.0 * U256::from(5u64) / U256::from(10000u64)
-                                        } else {
-                                            U256::zero()
-                                        };
-                                    let fresh_excess = fresh_opt.1
-                                        .saturating_sub(gas_cost_in_token)
-                                        .saturating_sub(fresh_aave_fee);
-                                    if fresh_excess.is_zero() {
-                                        info!(
-                                            "[confirm] idx={} stale signal — fresh CL state shows no profit, skipping",
-                                            path_idx
-                                        );
-                                        continue;
-                                    }
-                                    (fresh_opt, fresh_excess)
-                                } else {
-                                    (opt, excess_profit)
-                                };
+                                // ── Fast-path: skip confirm-phase state refresh ──────────────────
+                                // On L2 with 2s blocks, the confirm RPC calls (refresh CL state,
+                                // refresh V2 reserves, re-optimize) add 1-5s of latency per
+                                // candidate.  By the time we finish, someone else has arbed the
+                                // opportunity (gross=0 on fresh state).
+                                //
+                                // Instead, use the scan-phase optimization directly and rely on
+                                // eth_call simulation (simulation_required=true) as the truth
+                                // gate.  On Base L2, a failed eth_call costs nothing (~$0).
+                                //
+                                // The scan-phase `opt` already deducted gas + fl_fee.
+                                // Safety margins are omitted — eth_call catches real slippage.
+                                let _ = (&path_cl_addrs, &path_v2_pools); // suppress unused warnings
 
                                 let profit_u256 = excess_profit;
                                 let token_unit = decimal_multipliers[&start_address];
@@ -988,6 +1102,7 @@ pub async fn event_handler(
                                         algebra_router,
                                         start_token: start_token.clone(),
                                         base_fee: block.next_base_fee,
+                                        token_price_usd,
                                     };
 
                                     // Build execution plan
@@ -996,12 +1111,26 @@ pub async fn event_handler(
                                         Ok(plan) => {
                                             executor.log_execution(&exec_params, &plan);
                                             if let Some(bundler) = &bundler {
-                                                // Slippage protection: require at least 95% of the expected
-                                                // post-repay output.  amount_in is the flash-loaned principal;
-                                                // the contract must output at least min_out after all hops for
-                                                // the slippage check to pass (minOut=0 disables the check).
+                                                // Slippage protection: min_out must be at least the
+                                                // flash-loan repayment (principal + premium), otherwise
+                                                // the transferFrom in the flash-loan callback reverts
+                                                // with a bare revert (data:None) that's hard to debug.
                                                 let expected_out = plan.amount_in + exec_params.expected_profit;
-                                                let min_out = expected_out * U256::from(95u64) / U256::from(100u64);
+                                                let slippage_floor = expected_out * U256::from(95u64) / U256::from(100u64);
+
+                                                let repay_amount = match &plan.flashloan_type {
+                                                    Flashloan::AaveV3 => {
+                                                        // 0.05% premium (5 bps)
+                                                        plan.amount_in + (plan.amount_in * U256::from(5u64)) / U256::from(10_000u64)
+                                                    }
+                                                    Flashloan::UniswapV2 => {
+                                                        let fee_bps = plan.path_params.first().map(|p| p.fee).unwrap_or(300);
+                                                        plan.amount_in + (plan.amount_in * U256::from(fee_bps)) / U256::from(10_000u64 - fee_bps) + U256::one()
+                                                    }
+                                                    _ => plan.amount_in, // Balancer: 0 premium
+                                                };
+
+                                                let min_out = std::cmp::max(slippage_floor, repay_amount);
                                                 match bundler
                                                     .order_tx(
                                                         plan.path_params.clone(),
@@ -1025,6 +1154,8 @@ pub async fn event_handler(
                                                                     match bundler.send_tx(tx).await {
                                                                         Ok(hash) => {
                                                                             info!("✅ Executed tx: {:?}", hash);
+                                                                            slippage_fail_count.remove(&path_idx);
+                                                                            slippage_cooldown_until.remove(&path_idx);
                                                                             executed_successfully = true;
                                                                         }
                                                                         Err(e) => info!("❌ Failed to send tx: {:?}", e),
@@ -1040,6 +1171,49 @@ pub async fn event_handler(
                                                                         tx.gas,
                                                                         hex::encode(tx.data.clone().unwrap_or_default())
                                                                     );
+
+                                                                    // ── Auto-detect fee-on-transfer tokens ──
+                                                                    let err_str = format!("{:?}", e).to_lowercase();
+                                                                    if err_str.contains("slippage") {
+                                                                        let fail_count = slippage_fail_count.entry(path_idx).or_insert(0);
+                                                                        *fail_count = fail_count.saturating_add(1);
+                                                                        if *fail_count >= SLIPPAGE_FAIL_THRESHOLD {
+                                                                            let until_block = current_block.saturating_add(SLIPPAGE_COOLDOWN_BLOCKS);
+                                                                            slippage_cooldown_until.insert(path_idx, until_block);
+                                                                            info!(
+                                                                                "[cooldown] idx={} slippage repeated {}x; skipping until block {}",
+                                                                                path_idx,
+                                                                                *fail_count,
+                                                                                until_block
+                                                                            );
+                                                                            slippage_fail_count.insert(path_idx, 0);
+                                                                        }
+                                                                    }
+                                                                    if err_str.contains("transfer amount exceeds balance") {
+                                                                        let path = &paths[path_idx];
+                                                                        let start_addr = H160::from_str(&start_token.address).unwrap_or_default();
+                                                                        // Collect intermediate tokens (everything that isn't the start token).
+                                                                        let mut suspects: Vec<H160> = Vec::new();
+                                                                        for hop in 0..path.nhop {
+                                                                            let pool = path.get_pool(hop);
+                                                                            if pool.token0 != start_addr && !suspects.contains(&pool.token0) {
+                                                                                suspects.push(pool.token0);
+                                                                            }
+                                                                            if pool.token1 != start_addr && !suspects.contains(&pool.token1) {
+                                                                                suspects.push(pool.token1);
+                                                                            }
+                                                                        }
+                                                                        if let Ok(mut bl) = runtime_blacklist.write() {
+                                                                            for token in &suspects {
+                                                                                if bl.insert(*token) {
+                                                                                    info!(
+                                                                                        "🚫 Auto-blacklisted suspected FoT token: {:#x}",
+                                                                                        token
+                                                                                    );
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
 
                                                                     if std::env::var("BOT_DEBUG_TRACE").ok().as_deref() == Some("1") {
                                                                         let call = json!({
@@ -1071,6 +1245,10 @@ pub async fn event_handler(
                                                             match bundler.send_tx(tx).await {
                                                                 Ok(hash) => {
                                                                     info!("✅ Executed tx: {:?}", hash);
+                                                                    slippage_fail_count.remove(&path_idx);
+                                                                    slippage_cooldown_until.remove(&path_idx);
+                                                                    stale_streak.remove(&path_idx);
+                                                                    stale_backoff_until.remove(&path_idx);
                                                                     executed_successfully = true;
                                                                 }
                                                                 Err(e) => info!("❌ Failed to send tx: {:?}", e),
@@ -1252,7 +1430,7 @@ fn estimate_gas_cost_in_start_token(
     config: &Config,
     pools: &HashMap<H160, AnyPool>,
     reserves: &HashMap<H160, Reserve>,
-    base_fee: U256,
+    gas_cost_in_wei: U256,
     start: &TokenConfig,
 ) -> U256 {
     if !config.gas.enabled {
@@ -1336,11 +1514,7 @@ fn estimate_gas_cost_in_start_token(
         }
     };
 
-    let estimated_gas_usage = U256::from(config.execution.estimated_gas);
-    // Rest of calculation
-    let gas_cost_in_wei = base_fee * estimated_gas_usage;
-    let gas_cost_in_native =
-        (gas_cost_in_wei.as_u64() as f64) / ((*WEI).as_u64() as f64);
+    let gas_cost_in_native = u256_to_f64(gas_cost_in_wei) / u256_to_f64(*WEI);
 
     let gas_cost_in_stable = gas_token_price_in_stable * gas_cost_in_native;
     let stable_decimals = config.gas.stable_decimals.unwrap_or(start.decimals) as i32;
@@ -1397,7 +1571,7 @@ fn estimate_gas_cost_in_start_token(
                 // Convert to start-token atomic units.
                 let stable_dec = config.gas.stable_decimals.unwrap_or(6) as i32;
                 let start_dec = start.decimals as i32;
-                let gas_stable_f64 = gas_cost_in_stable.as_u64() as f64;
+                let gas_stable_f64 = u256_to_f64(gas_cost_in_stable);
                 // Normalize to whole stable tokens, apply conversion, re-scale to start atoms.
                 let gas_in_start_atoms = gas_stable_f64
                     / (10.0f64).powi(stable_dec)
@@ -1411,4 +1585,18 @@ fn estimate_gas_cost_in_start_token(
     // No bridging pool found — return 0 rather than a nonsensical stable amount.
     // This is safe (never rejects a good opportunity) but means gas isn't charged.
     U256::zero()
+}
+
+fn estimate_gas_units_for_path(path: &crate::paths::ArbPath) -> u64 {
+    let base_gas: u64 = 350_000;
+    let mut per_hop: u64 = 0;
+    for hop in 0..path.nhop {
+        let pool = path.get_pool(hop);
+        per_hop += match &pool.pool_type {
+            PoolType::Algebra(_) | PoolType::UniswapV3CL(_) => 300_000,
+            PoolType::LFJ(_) => 280_000,
+            _ => 180_000,
+        };
+    }
+    base_gas + per_hop
 }

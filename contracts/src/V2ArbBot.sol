@@ -9,7 +9,7 @@ import "./interface/IUniswapV2.sol";
 import "./interface/IBalancer.sol";
 import "./interface/IAaveV3.sol";
 import "./interface/IAlgebraPool.sol";
-import "./interface/IRamsesV3Pool.sol";
+import "./interface/IUniswapV3Pool.sol";
 import "./interface/ILBPair.sol";
 
 /// @dev Minimal extension of IERC20 to access decimals() for stable AMM math.
@@ -17,7 +17,7 @@ interface IERC20Extended is IERC20 {
     function decimals() external view returns (uint8);
 }
 
-contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleReceiver, IRamsesV3SwapCallback {
+contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleReceiver, IUniswapV3SwapCallback {
     // can perform flashloan, multihop swaps in Uniswap V2 variant pools
     using SafeERC20 for IERC20;
 
@@ -32,7 +32,7 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
     ///      before pool.swap() and cleared immediately after.  Prevents any EOA from
     ///      calling the callbacks and draining contract tokens.
     address private _pendingAlgebraPool;
-    address private _pendingRamsesPool;
+    address private _pendingV3Pool;
 
     receive() external payable {
         // wrap on receive
@@ -134,8 +134,12 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
     function _swapAlgebraPool(
         address poolAddr,
         address tokenIn,
+        address tokenOut,
         uint amountIn
     ) internal returns (uint amountOut) {
+        // Snapshot tokenOut balance to handle fee-on-transfer tokens correctly.
+        uint balanceBefore = IERC20(tokenOut).balanceOf(address(this));
+
         // Arm callback auth before calling pool.swap(); disarm after.
         _pendingAlgebraPool = poolAddr;
         IAlgebraPool pool = IAlgebraPool(poolAddr);
@@ -145,7 +149,7 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
             ? 4295128740                                                    // MIN_SQRT_RATIO + 1 (Algebra MIN_SQRT_RATIO = 4295128739)
             : 1461446703485210103287273052203988822378723970341;            // MAX_SQRT_RATIO - 1
 
-        (int256 delta0, int256 delta1) = pool.swap(
+        pool.swap(
             address(this),
             zeroToOne,
             int256(amountIn),
@@ -154,7 +158,8 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
         );
 
         _pendingAlgebraPool = address(0);
-        amountOut = uint256(zeroToOne ? -delta1 : -delta0);
+        // Actual received amount via balance delta (FoT-safe).
+        amountOut = IERC20(tokenOut).balanceOf(address(this)) - balanceBefore;
     }
 
     // ── Solidly stable pair (x³y + xy³ = k) ─────────────────────────────────
@@ -320,15 +325,19 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
         amountOut = IERC20(tokenOut).balanceOf(address(this)) - balanceBefore;
     }
 
-    // ── Pharaoh CL / RamsesV3 (Uniswap V3 fork) ─────────────────────────────
-    function _swapRamsesV3Pool(
+    // ── Uniswap V3 CL (Aerodrome CL, PancakeSwap V3, and all V3 forks) ─────────
+    function _swapUniswapV3Pool(
         address poolAddr,
         address tokenIn,
+        address tokenOut,
         uint    amountIn
     ) internal returns (uint amountOut) {
+        // Snapshot tokenOut balance to handle fee-on-transfer tokens correctly.
+        uint balanceBefore = IERC20(tokenOut).balanceOf(address(this));
+
         // Arm callback auth before calling pool.swap(); disarm after.
-        _pendingRamsesPool = poolAddr;
-        IRamsesV3Pool pool = IRamsesV3Pool(poolAddr);
+        _pendingV3Pool = poolAddr;
+        IUniswapV3Pool pool = IUniswapV3Pool(poolAddr);
         bool zeroForOne = (tokenIn == pool.token0());
 
         // Standard UniV3 price limits
@@ -336,7 +345,7 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
             ? 4295128740                                          // TickMath.MIN_SQRT_RATIO + 1
             : 1461446703485210103287273052203988822378723970341;  // TickMath.MAX_SQRT_RATIO - 1
 
-        (int256 delta0, int256 delta1) = pool.swap(
+        pool.swap(
             address(this),
             zeroForOne,
             int256(amountIn),
@@ -344,20 +353,38 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
             abi.encode(tokenIn, amountIn)
         );
 
-        _pendingRamsesPool = address(0);
-        amountOut = uint256(zeroForOne ? -delta1 : -delta0);
+        _pendingV3Pool = address(0);
+        // Actual received amount via balance delta (FoT-safe).
+        amountOut = IERC20(tokenOut).balanceOf(address(this)) - balanceBefore;
     }
 
-    /// @notice RamsesV3 swap callback — called by the pool to pull input tokens.
-    /// Named `uniswapV3SwapCallback` because RamsesV3 retains the Uniswap V3 ABI.
+    /// @notice Uniswap V3 swap callback — called by UniV3 / Aerodrome CL pools.
     function uniswapV3SwapCallback(
         int256 amount0Delta,
         int256 amount1Delta,
         bytes calldata data
     ) external override {
+        _handleV3Callback(amount0Delta, amount1Delta, data);
+    }
+
+    /// @notice PancakeSwap V3 swap callback — PCS V3 uses a different selector.
+    function pancakeV3SwapCallback(
+        int256 amount0Delta,
+        int256 amount1Delta,
+        bytes calldata data
+    ) external {
+        _handleV3Callback(amount0Delta, amount1Delta, data);
+    }
+
+    /// @dev Shared logic for all V3-style swap callbacks.
+    function _handleV3Callback(
+        int256 amount0Delta,
+        int256 amount1Delta,
+        bytes calldata data
+    ) internal {
         // Only the pool we just called may invoke this callback.
         require(
-            _pendingRamsesPool != address(0) && msg.sender == _pendingRamsesPool,
+            _pendingV3Pool != address(0) && msg.sender == _pendingV3Pool,
             "V3CB: not pool"
         );
         (address tokenIn, ) = abi.decode(data, (address, uint256));
@@ -407,15 +434,15 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
             if (poolType == 1) {
                 // Algebra CL - call pool directly (bypass router)
                 // router field holds pool address; fee is handled internally by the pool
-                amountOut = _swapAlgebraPool(router, tokenIn, amountOut);
+                amountOut = _swapAlgebraPool(router, tokenIn, tokenOut, amountOut);
             } else if (poolType == 2) {
                 // Solidly stable pair (x³y + xy³ = k) — same swap() ABI but different math.
                 // router field holds pair address; feeBps carries the pool fee.
                 amountOut = _swapSolidlyStablePair(router, tokenIn, tokenOut, amountOut, feeBps);
             } else if (poolType == 3) {
-                // RamsesV3 / Pharaoh CL — Uniswap V3 fork.
+                // UniswapV3 CL (Aerodrome CL, PancakeSwap V3, etc.) — pool_type=3.
                 // router field holds pool address; fee handled internally by the pool.
-                amountOut = _swapRamsesV3Pool(router, tokenIn, amountOut);
+                amountOut = _swapUniswapV3Pool(router, tokenIn, tokenOut, amountOut);
             } else if (poolType == 4) {
                 // LFJ Liquidity Book V2.1/V2.2 — call pair directly.
                 // router field holds pair address.

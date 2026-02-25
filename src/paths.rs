@@ -482,14 +482,14 @@ impl ArbPath {
             //   0 = V2 / Solidly volatile — _swapV2Pair (x*y=k on-chain calc)
             //   1 = Algebra CL            — _swapAlgebraPool
             //   2 = Solidly stable        — _swapSolidlyStablePair (pending contract update)
-            //   3 = UniswapV3CL           — _swapUniswapV3CLPool      (pending contract update)
+            //   3 = UniswapV3CL / Aerodrome CL — _swapUniswapV3Pool (Uniswap V3 fork ABI)
             let (pool_type, router) = match &pool.pool_type {
                 PoolType::Algebra(_) => {
                     // Direct pool address; fee handled internally
                     (1u8, pool.address)
                 }
                 PoolType::UniswapV3CL(_) => {
-                    // Direct pool address; pool_type=3 (pending contract support)
+                    // Direct pool address; pool_type=3 → _swapUniswapV3Pool (Uniswap V3 ABI)
                     (3u8, pool.address)
                 }
                 PoolType::V2(v2) if v2.version == DexVariant::SolidlyStable => {

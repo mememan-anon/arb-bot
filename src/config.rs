@@ -115,15 +115,25 @@ pub struct AlgebraConfig {
 }
 
 /// UniswapV3 CL (Uniswap V3 fork) configuration.
+/// Supports multiple factories (e.g. Uniswap V3 + PancakeSwap V3 on the same chain).
 #[derive(Debug, Clone, Deserialize)]
 pub struct UniswapV3CLConfig {
     pub enabled: bool,
-    /// UniswapV3CL factory address.
+    /// Primary factory address (single-factory backward compat).
+    /// If `factories` is also set, both are merged.
     #[serde(default)]
     pub factory: Option<String>,
-    /// SwapRouter address.
+    /// Additional factory addresses (e.g. PancakeSwap V3).
+    /// The pull script iterates all of them; pools land in the same CSV.
+    #[serde(default)]
+    pub factories: Vec<String>,
+    /// SwapRouter address (primary, used for Uniswap V3 routing).
     #[serde(default)]
     pub router: Option<String>,
+    /// Additional routers indexed parallel to `factories`.
+    /// Index 0 = router for factory[0], etc.  Shorter than factories → last entry reused.
+    #[serde(default)]
+    pub routers: Vec<String>,
     /// Quoter / QuoterV2 address (optional, used for off-chain price queries).
     #[serde(default)]
     pub quoter: Option<String>,
@@ -134,6 +144,31 @@ pub struct UniswapV3CLConfig {
     #[serde(default)]
     pub min_liquidity: u64,
 }
+
+impl UniswapV3CLConfig {
+    /// All factory addresses: merges the legacy `factory` field with `factories`.
+    pub fn all_factories(&self) -> Vec<&str> {
+        let mut out: Vec<&str> = self.factory.as_deref().into_iter().collect();
+        for f in &self.factories {
+            if !out.contains(&f.as_str()) {
+                out.push(f.as_str());
+            }
+        }
+        out
+    }
+
+    /// Router for a given factory index.  Falls back to `routers[last]` then `router`.
+    pub fn router_for(&self, idx: usize) -> Option<&str> {
+        if let Some(r) = self.routers.get(idx) {
+            return Some(r.as_str());
+        }
+        if !self.routers.is_empty() {
+            return Some(self.routers.last().unwrap().as_str());
+        }
+        self.router.as_deref()
+    }
+}
+
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct GasConfig {
@@ -190,8 +225,6 @@ pub struct ExecutionConfig {
     /// Estimated gas units for a single arb transaction (used for profit netting).
     #[serde(default = "default_estimated_gas")]
     pub estimated_gas: u64,
-    /// Balancer V2 Vault address for Balancer flash loans.
-    /// On Avalanche: 0xBA12222222228d8Ba445958a75a0704d566BF2C8
     #[serde(default)]
     pub balancer_vault: Option<String>,
 }

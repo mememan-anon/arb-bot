@@ -283,12 +283,16 @@ impl Bundler {
         // Base cost covers flash-loan setup, calldata, SLOAD/SSTORE overhead.
         // CL (types 1, 4) and LFJ (type 2) use iterative math on-chain → more gas.
         let base_gas: u64 = 350_000;
+        // CL gas scales with tick crossings: ~125k base + ~30k per tick.
+        // Estimate worst-case crossings from MAX_TICK_CROSSES (10).
+        // Typical: 1-3 crossings = ~185-215k.  Budget for ~5 average.
         let per_hop_gas: u64 = paths.iter().map(|p| match p.pool_type {
-            1 | 4 => 300_000,   // Algebra / UniswapV3CL (tick crossing)
-            2     => 280_000,   // LFJ Liquidity Book (bin traversal)
+            1 | 3 => 280_000,   // Algebra (1) / UniswapV3CL (3) — ~125k + 5*30k + margin
+            4     => 280_000,   // LFJ Liquidity Book — bin traversal
             _     => 180_000,   // V2, Solidly Stable
         }).sum();
-        let gas_limit = base_gas + per_hop_gas;
+        // Add a 15% buffer to handle multi-tick edge cases
+        let gas_limit = base_gas + per_hop_gas + (per_hop_gas / 7);
 
         let mut params = Vec::new();
         params.extend(vec![

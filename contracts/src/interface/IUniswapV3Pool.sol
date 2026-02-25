@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.13;
 
-/// @notice Minimal interface for a Pharaoh CL / RamsesV3 pool (Uniswap V3 fork).
-interface IRamsesV3Pool {
+/// @notice Minimal interface for a Uniswap V3 pool (any V3 fork: Aerodrome CL, PancakeSwap V3, etc.).
+interface IUniswapV3Pool {
     /// @notice Returns the current sqrt price and tick.
     function slot0()
         external
@@ -40,9 +40,9 @@ interface IRamsesV3Pool {
     ) external returns (int256 amount0, int256 amount1);
 }
 
-/// @notice Callback that RamsesV3 pools call to collect the input tokens.
-interface IRamsesV3SwapCallback {
-    /// @dev Named `uniswapV3SwapCallback` because RamsesV3 retains the Uniswap V3 ABI.
+/// @notice Callback that Uniswap V3 pools call to collect the input tokens.
+interface IUniswapV3SwapCallback {
+    /// @dev Standard Uniswap V3 swap callback — all V3 forks retain this same ABI.
     function uniswapV3SwapCallback(
         int256 amount0Delta,
         int256 amount1Delta,

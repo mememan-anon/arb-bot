@@ -8,7 +8,8 @@
       "Bash(node -e \":*)",
       "Bash(node --experimental-websocket test_apikeys.mjs)",
       "Bash(node --input-type=module -e \":*)",
-      "Bash(python -c \"import ast; ast.parse\\(open\\(''scripts/pull_aerodrome_sugar.py''\\).read\\(\\)\\); print\\(''syntax ok''\\)\")"
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''scripts/pull_aerodrome_sugar.py''\\).read\\(\\)\\); print\\(''syntax ok''\\)\")",
+      "Bash(cargo check)"
     ]
   }
 }

@@ -53,7 +53,7 @@ factories = ["0x512eb749541B7cf294be882D636218c84a5e9E5F"]
 routers = ["0xaBfc48e8BED7b26762745f3139555F320119709d"]
 quoter = "0x3e182bcf14Be6142b9217847ec1112e3c39Eb689"
 
-# UniswapV3 CL pools (any V3 fork: Pharaoh, Ramses, etc.) — slot0() ABI.
+# UniswapV3 CL pools (any V3 fork: Pharaoh, etc.) — slot0() ABI.
 # Pool data cached via: python scripts/pull_pharaoh.py --cl --config-path config/avax.toml
 # Cached to: cache/avax/.cached-v3cl-pools.csv
 [dexes.uniswapv3cl]

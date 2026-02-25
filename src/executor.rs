@@ -5,8 +5,11 @@ use std::str::FromStr;
 
 use crate::bundler::{Flashloan, PathParam};
 use crate::config::{Config, TokenConfig};
-use crate::constants::GWEI;
 use crate::paths::ArbPath;
+
+fn wei_to_gwei(wei: U256) -> f64 {
+    wei.as_u128() as f64 / 1e9
+}
 
 #[derive(Debug, Clone)]
 pub struct ExecutionParams {
@@ -17,6 +20,8 @@ pub struct ExecutionParams {
     pub algebra_router: Option<H160>,
     pub start_token: TokenConfig,
     pub base_fee: U256,
+    /// USD price of one whole start token (e.g. 1907.0 for WETH). 0.0 if unknown.
+    pub token_price_usd: f64,
 }
 
 pub struct Executor {
@@ -121,10 +126,25 @@ impl Executor {
             max_fee_per_gas
         };
 
+        // Floor: max_fee_per_gas must be >= current_base_fee + priority_fee,
+        // otherwise all nodes will reject the transaction outright.
+        let fee_floor = current_base_fee + max_priority_fee;
+        let max_fee_per_gas = if max_fee_per_gas < fee_floor {
+            warn!(
+                "max_fee_per_gas {} below floor {} (base_fee + priority), raising to floor",
+                max_fee_per_gas, fee_floor
+            );
+            fee_floor
+        } else {
+            max_fee_per_gas
+        };
+
         info!(
-            "Gas fees: priority={} gwei, max_fee={} gwei",
-            max_priority_fee.as_u64() / GWEI.as_u64(),
-            max_fee_per_gas.as_u64() / GWEI.as_u64()
+            "Gas fees: priority={:.6} gwei ({} wei), max_fee={:.6} gwei ({} wei)",
+            wei_to_gwei(max_priority_fee),
+            max_priority_fee,
+            wei_to_gwei(max_fee_per_gas),
+            max_fee_per_gas
         );
 
         (max_priority_fee, max_fee_per_gas)
@@ -164,6 +184,12 @@ impl Executor {
         let profit_in_token = (params.expected_profit.as_u128() as f64)
             / ((10_u128.pow(params.start_token.decimals as u32)) as f64);
 
+        let profit_usd = if params.token_price_usd > 0.0 {
+            profit_in_token * params.token_price_usd
+        } else {
+            profit_in_token
+        };
+
         info!("=== EXECUTION PLAN ===");
         info!("Amount In: {} {}",
             params.amount_in.as_u128() as f64 / (10_u128.pow(params.start_token.decimals as u32)) as f64,
@@ -172,12 +198,12 @@ impl Executor {
         info!("Expected Profit: {:.6} {} (${:.2})",
             profit_in_token,
             params.start_token.symbol,
-            profit_in_token
+            profit_usd
         );
         info!("Flash Loan: {:?} from {:?}", plan.flashloan_type, plan.loan_pool);
         info!("Path Hops: {}", plan.path_params.len());
-        info!("Max Priority Fee: {} gwei", plan.max_priority_fee.as_u64() / GWEI.as_u64());
-        info!("Max Fee Per Gas: {} gwei", plan.max_fee_per_gas.as_u64() / GWEI.as_u64());
+        info!("Max Priority Fee: {:.6} gwei", plan.max_priority_fee.as_u128() as f64 / 1e9);
+        info!("Max Fee Per Gas: {:.6} gwei", plan.max_fee_per_gas.as_u128() as f64 / 1e9);
         info!("======================");
     }
 }

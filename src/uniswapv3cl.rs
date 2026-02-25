@@ -276,16 +276,18 @@ pub async fn fetch_full_uniswapv3cl_pools(
             };
 
         if responses.len() < chunk.len() * 2 {
-            warn!("multicall3 batch {}: expected {} results, got {}",
+            warn!("multicall3 batch {}: expected {} results, got {} — processing valid subset",
                 batch_idx, chunk.len() * 2, responses.len());
-            continue;
         }
 
         for (i, mut p) in chunk.iter().cloned().enumerate() {
-            let slot0_ok = responses[i * 2].0;
-            let sd       = &responses[i * 2].1;
-            let liq_ok   = responses[i * 2 + 1].0;
-            let ld       = &responses[i * 2 + 1].1;
+            let slot0_idx = i * 2;
+            let liq_idx   = i * 2 + 1;
+            if liq_idx >= responses.len() { break; }
+            let slot0_ok = responses[slot0_idx].0;
+            let sd       = &responses[slot0_idx].1;
+            let liq_ok   = responses[liq_idx].0;
+            let ld       = &responses[liq_idx].1;
 
             if slot0_ok && liq_ok && sd.len() >= 64 && ld.len() >= 32 {
                 p.sqrt_price_x96 = U256::from_big_endian(&sd[0..32]);
@@ -438,10 +440,14 @@ pub async fn fetch_uniswapv3cl_states(
 const TICKS_SEL: [u8; 4] = [0xf3, 0x0d, 0xba, 0x93];
 
 /// Number of tick-spacing multiples to fetch on each side of the current tick.
-const TICKS_PER_SIDE: i32 = 5;
+/// 25 covers ~2.5 % for 10-spacing pools, ~15 % for 60-spacing.
+/// This is intentionally wider than MAX_TICK_CROSSES (10) so that pools stay
+/// "in range" longer between periodic re-enrichments and the scan-phase
+/// simulation remains accurate without needing the confirm branch to fix it.
+const TICKS_PER_SIDE: i32 = 25;
 
 /// Maximum tick queries per Multicall3 batch.
-const TICK_BATCH_SIZE: usize = 5000;
+const TICK_BATCH_SIZE: usize = 500;
 
 /// Floor-division of `tick` to the nearest multiple of `spacing`.
 fn floor_tick(tick: i32, spacing: i32) -> i32 {
