@@ -4,7 +4,7 @@ use ethers::{
     providers::{Middleware, Provider, Ws},
     types::{H160, U256},
 };
-use log::{info, warn};
+use log::{debug, info, warn};
 use serde_json::json;
 use std::{collections::HashMap, io::Write as _, str::FromStr, sync::Arc};
 use std::sync::RwLock;
@@ -17,7 +17,7 @@ use crate::bundler::{Bundler, Flashloan};
 use crate::config::{Config, TokenConfig};
 use crate::constants::{get_blacklist_tokens, Env, WEI};
 use crate::executor::{ExecutionParams, Executor};
-use crate::multi::{batch_get_uniswap_v2_reserves, Reserve};
+use crate::multi::{batch_get_uniswap_v2_reserves, get_uniswap_v2_reserves, Reserve};
 use crate::paths::{generate_triangular_paths_mixed, generate_cross_dex_paths};
 use crate::pools::{load_all_pools_from_v2, AnyPool, PoolType};
 use crate::simulator::UniswapV2Simulator;
@@ -305,16 +305,6 @@ pub async fn event_handler(
     info!("Total paths across all start tokens: {}", all_paths.len());
     let paths = all_paths;
 
-    // Build a fast-lookup set of all tracked V3CL pool addresses.
-    // Used every block to filter the eth_getLogs Swap results down to only
-    // pools we care about, avoiding state fetches for untracked pools.
-    let v3cl_pool_set: HashSet<H160> = v3cl_pools_full.iter().map(|p| p.address).collect();
-
-    // Build a fast-lookup set of all tracked Algebra pool addresses.
-    // Algebra uses the same Swap(address,address,int256,int256,uint160,uint128,int24)
-    // event signature as Uniswap V3, so the same eth_getLogs call captures both.
-    let algebra_pool_set: HashSet<H160> = algebra_pools_info.iter().map(|p| p.address).collect();
-
     let blacklist_tokens = get_blacklist_tokens(&config.chain.blacklisted_tokens);
 
     // Runtime auto-blacklist: populated when a simulation fails with
@@ -345,10 +335,15 @@ pub async fn event_handler(
     let mut stale_streak: HashMap<usize, u8> = HashMap::new();
     let mut stale_backoff_until: HashMap<usize, u64> = HashMap::new();
 
-    // Periodic tick re-enrichment: every N blocks, re-enrich CL pools
-    // whose current tick has drifted outside their enriched tick_data window.
-    const TICK_REENRICH_INTERVAL: u64 = 50;
-    let mut blocks_since_reenrich: u64 = 0;
+    // Combined cold-scan + tick re-enrichment interval (50 blocks ≈ 100s on Base).
+    // Every REFRESH_INTERVAL blocks:
+    //   1. Re-fetch slot0+liquidity for ALL CL pools from CSV
+    //   2. Promote newly-liquid pools into algebra_pools_map (hot set)
+    //   3. Re-enrich tick data for hot pools whose tick drifted out of range
+    // Path generation is NOT repeated — paths are fixed at startup.
+    // To add new pools/tokens, restart the bot.
+    const REFRESH_INTERVAL: u64 = 50;
+    let mut blocks_since_refresh: u64 = 0;
 
     // Active pools participating in non-blacklisted paths.
     let mut active_pools = HashMap::new();
@@ -515,38 +510,37 @@ pub async fn event_handler(
         match event_receiver.recv().await {
             Ok(event) => match event {
                 Event::Block(block) => {
-                    info!("{:?}", block);
+                    let block_start = std::time::Instant::now();
 
-                    // 1. Event-driven CL state refresh (Algebra + V3CL + LFJ).
-                    //
-                    // One eth_getLogs call retrieves all V3-style Swap events.
-                    // Algebra pools use the same Swap topic as UniswapV3CL, so we
-                    // can split the results into Algebra vs V3CL afterwards.  This
-                    // avoids fetching ALL pools every block — only swapped ones.
-                    let mut cl_swapped: HashSet<H160> = HashSet::new();
-                    if !v3cl_pools_full.is_empty() || !algebra_pools_info.is_empty() {
-                        cl_swapped =
-                            match get_touched_v3cl_pools(provider.clone(), block.block_number).await {
-                                Ok(s) => s.into_iter()
-                                    .filter(|a| v3cl_pool_set.contains(a) || algebra_pool_set.contains(a))
-                                    .collect(),
-                                Err(e) => {
-                                    if !is_unknown_block_error(&e) {
-                                        info!("get_touched_cl_pools error: {:?}", e);
-                                    }
-                                    HashSet::new()
+                    // Swap event tracking via eth_getLogs is only needed when LFJ
+                    // pools are active (they use event-driven refresh).  CL and V2
+                    // pools use full per-block multicall refresh instead.
+                    let cl_swapped: HashSet<H160> = if !lfj_pools_full.is_empty() {
+                        match get_touched_v3cl_pools(provider.clone(), block.block_number).await {
+                            Ok(s) => s,
+                            Err(e) => {
+                                if !is_unknown_block_error(&e) {
+                                    info!("get_touched_cl_pools error: {:?}", e);
                                 }
-                            };
-                    }
+                                HashSet::new()
+                            }
+                        }
+                    } else {
+                        HashSet::new()
+                    };
 
-                    // 1a. Refresh Algebra pools that swapped this block
-                    if !algebra_pools_info.is_empty() {
-                        let algebra_swapped: Vec<_> = algebra_pools_info.iter()
-                            .filter(|p| cl_swapped.contains(&p.address))
+                    // ── Step 1: Refresh all hot CL pools (slot0+liquidity) ────────
+                    let cl_refresh_start = std::time::Instant::now();
+
+                    // Algebra pools (globalState ABI) — only if Algebra is enabled
+                    {
+                        let alg_active: Vec<_> = algebra_pools_info
+                            .iter()
+                            .filter(|p| algebra_pools_map.contains_key(&p.address))
                             .cloned()
                             .collect();
-                        if !algebra_swapped.is_empty() {
-                            let states = fetch_algebra_states(provider.clone(), &algebra_swapped).await;
+                        if !alg_active.is_empty() {
+                            let states = fetch_algebra_states(provider.clone(), &alg_active).await;
                             for (addr, state) in states {
                                 if let Some(pool) = algebra_pools_map.get_mut(&addr) {
                                     pool.sqrt_price_x96 = state.sqrt_price_x96;
@@ -560,15 +554,15 @@ pub async fn event_handler(
                         }
                     }
 
-                    // 1b. Refresh UniswapV3CL pools that swapped this block
-                    if !v3cl_pools_full.is_empty() {
-                        let v3cl_to_refresh: Vec<_> = v3cl_pools_full
+                    // V3CL pools (slot0 ABI) — build address list without cloning full structs
+                    {
+                        let v3cl_active: Vec<_> = v3cl_pools_full
                             .iter()
-                            .filter(|p| cl_swapped.contains(&p.address))
+                            .filter(|p| algebra_pools_map.contains_key(&p.address))
                             .cloned()
                             .collect();
-                        if !v3cl_to_refresh.is_empty() {
-                            let states = fetch_uniswapv3cl_states(provider.clone(), &v3cl_to_refresh).await;
+                        if !v3cl_active.is_empty() {
+                            let states = fetch_uniswapv3cl_states(provider.clone(), &v3cl_active).await;
                             for (addr, state) in states {
                                 if let Some(pool) = algebra_pools_map.get_mut(&addr) {
                                     pool.sqrt_price_x96 = state.sqrt_price_x96;
@@ -579,39 +573,7 @@ pub async fn event_handler(
                             }
                         }
                     }
-
-                    // 1b-extra. Periodic tick re-enrichment for drifted CL pools.
-                    // Every TICK_REENRICH_INTERVAL blocks, re-enrich pools whose current
-                    // tick has moved outside their enriched tick_data window.  This keeps
-                    // the scan-phase simulation reasonably accurate without per-block RPC cost.
-                    blocks_since_reenrich += 1;
-                    if blocks_since_reenrich >= TICK_REENRICH_INTERVAL {
-                        blocks_since_reenrich = 0;
-                        let mut drifted: Vec<_> = algebra_pools_map
-                            .values()
-                            .filter(|p| {
-                                if p.tick_data.is_empty() { return false; }
-                                let min_key = *p.tick_data.keys().min().unwrap();
-                                let max_key = *p.tick_data.keys().max().unwrap();
-                                p.tick < min_key || p.tick > max_key
-                            })
-                            .cloned()
-                            .collect();
-                        if !drifted.is_empty() {
-                            info!(
-                                "[tick-reenrich] block={} re-enriching {} drifted CL pool(s)",
-                                block.block_number, drifted.len()
-                            );
-                            enrich_tick_data(provider.clone(), &mut drifted).await;
-                            for refreshed in drifted {
-                                if let Some(pool) = algebra_pools_map.get_mut(&refreshed.address) {
-                                    if !refreshed.tick_data.is_empty() {
-                                        pool.tick_data = refreshed.tick_data;
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    let cl_refresh_ms = cl_refresh_start.elapsed().as_millis();
 
                     // 1c. Refresh LFJ pools — event-driven via Swap topic filtering.
                     // LFJ Swap topic: keccak256("Swap(address,address,uint24,bytes32,bytes32,uint24,uint128,uint128)")
@@ -631,63 +593,115 @@ pub async fn event_handler(
                         }
                     }
 
-                    // 2. Update V2 reserves
-                    let touched_reserves =
-                        match get_touched_pool_reserves(provider.clone(), block.block_number).await
-                        {
-                            Ok(response) => response,
-                            Err(e) => {
-                                if !is_unknown_block_error(&e) {
-                                    info!("Error from get_touched_pool_reserves: {:?}", e);
-                                }
-                                HashMap::new()
+                    // ── Step 2: Refresh all hot V2 reserves ─────────────────────
+                    let v2_refresh_start = std::time::Instant::now();
+                    match get_uniswap_v2_reserves(
+                        env.https_url.clone(),
+                        v2_pools_vec.clone(),
+                    ).await {
+                        Ok(fresh_reserves) => {
+                            for (addr, res) in fresh_reserves {
+                                reserves.insert(addr, res);
                             }
-                        };
-                    let mut touched_pools = Vec::new();
-                    for (address, reserve) in touched_reserves.into_iter() {
-                        if reserves.contains_key(&address) {
-                            reserves.insert(address, reserve);
-                            touched_pools.push(address);
+                        }
+                        Err(e) => {
+                            warn!("V2 full-refresh multicall failed, falling back to event-driven: {:?}", e);
+                            // Fallback: use event-driven approach
+                            let touched_reserves =
+                                match get_touched_pool_reserves(provider.clone(), block.block_number).await {
+                                    Ok(r) => r,
+                                    Err(e2) => {
+                                        if !is_unknown_block_error(&e2) {
+                                            info!("Error from get_touched_pool_reserves: {:?}", e2);
+                                        }
+                                        HashMap::new()
+                                    }
+                                };
+                            for (address, reserve) in touched_reserves.into_iter() {
+                                if reserves.contains_key(&address) {
+                                    reserves.insert(address, reserve);
+                                }
+                            }
                         }
                     }
 
-                    // Per-block stats: subscribed pools, how many swapped, V2 touched
-                    info!(
-                        "[stats] block={} | CL: {}/{} swapped | V2: {} touched",
-                        block.block_number,
-                        cl_swapped.len(),
-                        v3cl_pool_set.len() + algebra_pool_set.len(),
-                        touched_pools.len(),
-                    );
+                    let v2_refresh_ms = v2_refresh_start.elapsed().as_millis();
 
-                    let touched_pools_set: HashSet<H160> = touched_pools.iter().copied().collect();
+                    // ── Step 3: Combined cold-scan + tick refresh (every 50 blocks) ──
+                    // Fetch ALL CL pools' state, promote newly-liquid ones to hot set,
+                    // and re-enrich tick data for drifted hot pools — all in one pass.
+                    blocks_since_refresh += 1;
+                    if blocks_since_refresh >= REFRESH_INTERVAL {
+                        blocks_since_refresh = 0;
+                        let refresh_start = std::time::Instant::now();
+
+                        // 3a. Fetch slot0+liquidity for ALL V3CL pools via multicall
+                        let all_states = fetch_uniswapv3cl_states(
+                            provider.clone(), &v3cl_pools_full,
+                        ).await;
+
+                        // Update v3cl_pools_full with fresh state
+                        for pool in v3cl_pools_full.iter_mut() {
+                            if let Some(state) = all_states.get(&pool.address) {
+                                pool.sqrt_price_x96 = state.sqrt_price_x96;
+                                pool.liquidity = state.liquidity;
+                                pool.tick = state.tick;
+                            }
+                        }
+
+                        // 3b. Promote newly-liquid pools into the hot set
+                        let hot_addrs: HashSet<H160> = algebra_pools_map.keys().cloned().collect();
+                        let mut promoted = 0u32;
+                        for pool in &v3cl_pools_full {
+                            if pool.liquidity.as_u128() >= v3cl_min_liquidity.max(1) as u128
+                                && !hot_addrs.contains(&pool.address)
+                                && active_pools.contains_key(&pool.address)
+                            {
+                                // This pool is in a path and now has liquidity — promote it
+                                algebra_pools_map.insert(pool.address, pool.clone());
+                                promoted += 1;
+                            }
+                        }
+
+                        let fetch_ms = refresh_start.elapsed().as_millis();
+
+                        // 3c. Re-enrich tick data for hot pools whose tick drifted
+                        //     outside their enriched window.
+                        let mut drifted: Vec<_> = algebra_pools_map
+                            .values()
+                            .filter(|p| {
+                                if p.tick_data.is_empty() { return true; }
+                                let min_key = *p.tick_data.keys().min().unwrap();
+                                let max_key = *p.tick_data.keys().max().unwrap();
+                                p.tick < min_key || p.tick > max_key
+                            })
+                            .cloned()
+                            .collect();
+                        if !drifted.is_empty() {
+                            enrich_tick_data(provider.clone(), &mut drifted).await;
+                            for refreshed in &drifted {
+                                if let Some(pool) = algebra_pools_map.get_mut(&refreshed.address) {
+                                    if !refreshed.tick_data.is_empty() {
+                                        pool.tick_data = refreshed.tick_data.clone();
+                                    }
+                                }
+                            }
+                        }
+
+                        info!(
+                            "[refresh] block={} | fetch:{:.0}ms enrich:{} drifted | promoted:{} | total:{:.0}ms",
+                            block.block_number,
+                            fetch_ms,
+                            drifted.len(),
+                            promoted,
+                            refresh_start.elapsed().as_millis(),
+                        );
+                    }
+
                     let reserves_snapshot: HashMap<H160, Reserve> = reserves.clone();
 
-                    // Detection gas model aligned with execution model:
-                    //   max_fee = base_fee*2 + priority_fee
-                    // We use this conservative effective gas price during ranking.
-                    let max_priority_fee_wei = U256::from((config.execution.max_priority_fee_gwei * 1e9) as u128);
-                    let max_base_fee_cap_wei = U256::from((config.execution.max_base_fee_gwei * 1e9) as u128);
-                    let effective_gas_price = std::cmp::min(
-                        (block.next_base_fee * U256::from(2u64)).saturating_add(max_priority_fee_wei),
-                        max_base_fee_cap_wei,
-                    );
-
-                    let runtime_blacklist_snapshot = runtime_blacklist
-                        .read()
-                        .map(|bl| bl.clone())
-                        .unwrap_or_default();
-
                     let scan_block = block.block_number.as_u64();
-                    // Snapshot CL pools to exclude from the initial rayon scan.
-                    // Only pools with TRULY empty tick_data are skipped — they produce
-                    // phantom spreads because calculate_amount_out assumes constant
-                    // liquidity when no ticks are present.
-                    //
-                    // Pools whose tick has drifted outside the enriched window are NOT
-                    // skipped: the confirm branch re-enriches them before execution,
-                    // and slight inaccuracy at scan time is acceptable (produces mild
-                    // over/underestimates, not phantoms).
+                    // Skip pools with empty tick_data (phantom spreads) or in backoff.
                     let cl_pool_skip_set: HashSet<H160> = tick_enrich_backoff_until
                         .iter()
                         .filter(|(_, &until)| scan_block <= until)
@@ -700,24 +714,21 @@ pub async fn event_handler(
                         )
                         .collect();
 
-                    // Count drifted pools (OOR but not skipped) for diagnostics
-                    let cl_oor_count = algebra_pools_map
-                        .values()
-                        .filter(|p| {
-                            if p.tick_data.is_empty() { return false; }
-                            let min_key = *p.tick_data.keys().min().unwrap();
-                            let max_key = *p.tick_data.keys().max().unwrap();
-                            p.tick < min_key || p.tick > max_key
-                        })
-                        .count();
-
-                    info!(
-                        "[pipeline] block={} | CL pools: {} total, {} skip-set, {} OOR (not skipped)",
-                        block.block_number,
-                        algebra_pools_map.len(),
-                        cl_pool_skip_set.len(),
-                        cl_oor_count,
+                    // Detection gas model
+                    let max_priority_fee_wei = U256::from((config.execution.max_priority_fee_gwei * 1e9) as u128);
+                    let max_base_fee_cap_wei = U256::from((config.execution.max_base_fee_gwei * 1e9) as u128);
+                    let effective_gas_price = std::cmp::min(
+                        (block.next_base_fee * U256::from(2u64)).saturating_add(max_priority_fee_wei),
+                        max_base_fee_cap_wei,
                     );
+
+                    let runtime_blacklist_snapshot = runtime_blacklist
+                        .read()
+                        .map(|bl| bl.clone())
+                        .unwrap_or_default();
+
+                    // ── Step 4: Rayon scan all paths ─────────────────────────────
+                    let scan_start = std::time::Instant::now();
 
                     // Check all paths grouped by start token
                     for start_token in &config.start_tokens {
@@ -732,9 +743,8 @@ pub async fn event_handler(
                             None => continue,
                         };
 
-                        let evaluate_all = touched_pools.is_empty() && cl_swapped.is_empty();
-
                         // Parallel spread evaluation using rayon.
+                        // All CL+V2 state is refreshed per block, so evaluate every path.
                         // Each path is independently simulated; results are collected
                         // into a HashMap afterwards.
                         let spreads: HashMap<usize, i128> = token_path_indices
@@ -757,19 +767,6 @@ pub async fn event_handler(
                             let has_algebra = path.get_pool(0).pool_type.is_cl()
                                 || path.get_pool(1).pool_type.is_cl()
                                 || path.get_pool(2).pool_type.is_cl();
-
-                            let has_lfj = path.get_pool(0).pool_type.is_lfj()
-                                || path.get_pool(1).pool_type.is_lfj()
-                                || path.get_pool(2).pool_type.is_lfj();
-
-                            let is_touched_v2 = touched_pools_set
-                                .iter()
-                                .any(|pool| path.has_pool(pool));
-
-                            let is_touched_cl = has_algebra && [0u8, 1u8, 2u8].iter().any(|&i| {
-                                let p = path.get_pool(i);
-                                p.pool_type.is_cl() && cl_swapped.contains(&p.address)
-                            });
 
                             if force_seeded_v2
                                 && !seed_addrs.is_empty()
@@ -802,10 +799,6 @@ pub async fn event_handler(
                                 }) {
                                     return None;
                                 }
-                            }
-
-                            if !(evaluate_all || is_touched_cl || has_lfj || is_touched_v2) {
-                                return None;
                             }
 
                             let one_token_in = U256::from(1);
@@ -916,42 +909,11 @@ pub async fn event_handler(
                                 .saturating_sub(fl_fee_raw);
 
                             if excess_profit > U256::zero() {
-                                // ── Confirm with fresh on-chain CL state ─────────────────────────
-                                // The spread detection runs on cached state (updated only when the
-                                // pool emits a Swap event).  Before logging or executing, do a
-                                // targeted real-time refresh of every CL pool in this path so we
-                                // don't act on stale sqrtPrice — costs at most 1 extra eth_call.
-                                let path_pools_all: &[&crate::pools::AnyPool] = if path.nhop == 2 {
-                                    &[&path.pool_1, &path.pool_2]
-                                } else {
-                                    &[&path.pool_1, &path.pool_2, &path.pool_3]
-                                };
-                                let path_cl_addrs: Vec<H160> = path_pools_all
-                                    .iter()
-                                    .filter(|p| p.pool_type.is_cl())
-                                    .map(|p| p.address)
-                                    .collect();
-                                let path_v2_pools: Vec<_> = path_pools_all
-                                    .iter()
-                                    .filter_map(|p| match &p.pool_type {
-                                        PoolType::V2(v2) => Some(v2.clone()),
-                                        _ => None,
-                                    })
-                                    .collect();
-
-                                // ── Fast-path: skip confirm-phase state refresh ──────────────────
-                                // On L2 with 2s blocks, the confirm RPC calls (refresh CL state,
-                                // refresh V2 reserves, re-optimize) add 1-5s of latency per
-                                // candidate.  By the time we finish, someone else has arbed the
-                                // opportunity (gross=0 on fresh state).
-                                //
-                                // Instead, use the scan-phase optimization directly and rely on
-                                // eth_call simulation (simulation_required=true) as the truth
-                                // gate.  On Base L2, a failed eth_call costs nothing (~$0).
-                                //
-                                // The scan-phase `opt` already deducted gas + fl_fee.
-                                // Safety margins are omitted — eth_call catches real slippage.
-                                let _ = (&path_cl_addrs, &path_v2_pools); // suppress unused warnings
+                                // ── No confirm phase: state is fresh per-block ───────
+                                // All hot CL pools refreshed at block start, tick data
+                                // re-enriched every 50 blocks.  The eth_call simulation
+                                // before send is the authoritative guard against stale
+                                // state — no intermediate re-fetch needed.
 
                                 let profit_u256 = excess_profit;
                                 let token_unit = decimal_multipliers[&start_address];
@@ -1145,6 +1107,8 @@ pub async fn event_handler(
                                                 {
                                                     Ok(tx) => {
                                                         if config.execution.simulation_required {
+                                                            // Pool state is fresh from block-start
+                                                            // multicall.  eth_call is the final guard.
                                                             match bundler
                                                                 .provider
                                                                 .call(&tx.clone().into(), None)
@@ -1163,6 +1127,24 @@ pub async fn event_handler(
                                                                 }
                                                                 Err(e) => {
                                                                     info!("⚠️ Simulation failed for idx={}; trying next path: {:?}", path_idx, e);
+                                                                    info!(
+                                                                        "  sim_block={} min_out={} amount_in={} expected_profit={}",
+                                                                        block.block_number,
+                                                                        min_out,
+                                                                        plan.amount_in,
+                                                                        exec_params.expected_profit,
+                                                                    );
+                                                                    // Re-simulate the path off-chain to detect stale state.
+                                                                    let resim = path.simulate_mixed_path_raw(
+                                                                        plan.amount_in,
+                                                                        &reserves_snapshot,
+                                                                        &algebra_pools_map,
+                                                                        &lfj_states_map,
+                                                                    );
+                                                                    info!(
+                                                                        "  off-chain resim output={:?} (need >= {})",
+                                                                        resim, min_out,
+                                                                    );
                                                                     info!(
                                                                         "Simulation tx details: to={:?} from={:?} value={:?} gas={:?} data=0x{}",
                                                                         tx.to,
@@ -1189,7 +1171,12 @@ pub async fn event_handler(
                                                                             slippage_fail_count.insert(path_idx, 0);
                                                                         }
                                                                     }
-                                                                    if err_str.contains("transfer amount exceeds balance") {
+                                                                    // K() = 0xa932492f is the Uniswap/Solidly V2 invariant
+                                                                    // failure that fires when a fee-on-transfer token reduces
+                                                                    // the pool's actual receipt, breaking the xy=k check.
+                                                                    let is_fot_revert = err_str.contains("transfer amount exceeds balance")
+                                                                        || err_str.contains("0xa932492f");  // K()
+                                                                    if is_fot_revert {
                                                                         let path = &paths[path_idx];
                                                                         let start_addr = H160::from_str(&start_token.address).unwrap_or_default();
                                                                         // Collect intermediate tokens (everything that isn't the start token).
@@ -1275,6 +1262,22 @@ pub async fn event_handler(
                             }
                         }
                     }
+
+                    // ── Per-block summary ────────────────────────────────────────
+                    let block_total_ms = block_start.elapsed().as_millis();
+                    let scan_ms = scan_start.elapsed().as_millis();
+                    info!(
+                        "[block {}] CL:{:.0}ms V2:{:.0}ms scan:{:.0}ms total:{:.0}ms | hot CL:{} V2:{} paths:{} skip:{}",
+                        block.block_number,
+                        cl_refresh_ms,
+                        v2_refresh_ms,
+                        scan_ms,
+                        block_total_ms,
+                        algebra_pools_map.len(),
+                        v2_pools_vec.len(),
+                        paths.len(),
+                        cl_pool_skip_set.len(),
+                    );
                 }
                 Event::PendingTx(_) => {
                     // not using pending tx
@@ -1368,7 +1371,7 @@ fn get_token_price_usd(
                     PoolType::LFJ(_) => 0.0,
                 };
                 if price > 0.0 && price.is_finite() {
-                    info!("{} ${:.4}  ← price_pool {:?}", token.symbol, price, pp_addr);
+                    debug!("{} ${:.4}  ← price_pool {:?}", token.symbol, price, pp_addr);
                     return price;
                 }
             }
@@ -1388,7 +1391,7 @@ fn get_token_price_usd(
                     tok_is_t0,
                 );
                 if price > 0.0 && price.is_finite() {
-                    info!("{} ${:.4}  ← V2 pool {:?}", token.symbol, price, addr);
+                    debug!("{} ${:.4}  ← V2 pool {:?}", token.symbol, price, addr);
                     return price;
                 }
             }
@@ -1404,7 +1407,7 @@ fn get_token_price_usd(
                 if !tok_is_t0 && !tok_is_t1 { continue; }
                 let price = cl_price(alg, tok_is_t0);
                 if price > 0.0 && price.is_finite() {
-                    info!("{} ${:.4}  ← V3CL pool {:?}", token.symbol, price, addr);
+                    debug!("{} ${:.4}  ← V3CL pool {:?}", token.symbol, price, addr);
                     return price;
                 }
             }
@@ -1412,17 +1415,17 @@ fn get_token_price_usd(
         }
     }
 
-    info!("{} price unknown — no token/stable pool loaded; checking oracle cache", token.symbol);
+    debug!("{} price unknown — no token/stable pool loaded; checking oracle cache", token.symbol);
 
     // 5. Aave/Chainlink oracle cache — last resort before giving up
     if let Some(&p) = oracle_prices.get(&token_addr) {
         if p > 0.0 {
-            info!("{} ${:.4}  ← Chainlink/Aave oracle cache", token.symbol, p);
+            debug!("{} ${:.4}  ← Chainlink/Aave oracle cache", token.symbol, p);
             return p;
         }
     }
 
-    info!("{} price genuinely unknown — returning 0.0 (profit will be in token units)", token.symbol);
+    debug!("{} price genuinely unknown — returning 0.0 (profit will be in token units)", token.symbol);
     0.0
 }
 

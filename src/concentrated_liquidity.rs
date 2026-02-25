@@ -256,6 +256,16 @@ pub fn calculate_amount_out(
         break;
     }
 
+    // Conservative haircut: deduct 1 bp from the simulated output.
+    //
+    // On-chain V3 pools use mulDivRoundingUp for intermediate sqrtPrice
+    // calculations, which systematically produces slightly less output than our
+    // truncating-division simulator.  The 1 bp haircut compensates for this
+    // rounding difference.  The larger source of overestimation (stale pool
+    // state) is addressed by the targeted confirm-phase refresh in strategy.rs.
+    let haircut = total_out / U256::from(10_000u64);
+    total_out = total_out.saturating_sub(haircut);
+
     Some(total_out)
 }
 

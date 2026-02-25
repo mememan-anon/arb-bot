@@ -12,6 +12,7 @@ cache_dir = "base"
 max_profit_pct = 50.0
 blacklisted_tokens = [
   "0x5ab3d4c385b400f3abb49e80de2faf6a88a7b691",  # FLOCK — fee-on-transfer (tax token)
+  "0x74ccbe53f77b08632ce0cb91d3a545bf6b8e0979",  # fBOMB — FoT; K() invariant fails in vAMM pairs
 ]
 
 # ── Start tokens ────────────────────────────────────────────────────────────
