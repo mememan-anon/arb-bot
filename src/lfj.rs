@@ -52,7 +52,7 @@ pub struct LFJPoolInfo {
     pub token_y: H160,
     pub decimals_x: u8,
     pub decimals_y: u8,
-    /// Bin step — price granularity (e.g. 1 = 0.01%, 10 = 0.1&, 25 = 0.25%).
+    /// Bin step — price granularity (e.g. 1 = 0.01%, 10 = 0.1%, 25 = 0.25%).
     pub bin_step: u16,
     /// Base fee in basis points (e.g. 5 = 0.05%).
     /// Derived from API `lbBaseFeePct * 100`.
@@ -65,10 +65,10 @@ pub struct LFJPoolInfo {
 
 /// Per-block dynamic state — fetched each block via `getActiveId` + `getBin`.
 ///
-/// These are the reserves of the **active bin only** — the only bin that
-/// participates in the next swap.  Using total reserves (from `getReserves()`)
-/// would give wildly inflated outputs because inactive bins hold one-sided
-/// liquidity that cannot be swapped against.
+/// In addition to the active bin, we fetch a few adjacent bins on each side so
+/// that the simulation can traverse bins when a swap exhausts the active bin's
+/// reserve.  Each entry in `bins` is `(bin_id, reserve_x, reserve_y)` sorted by
+/// ascending bin_id.
 ///
 /// `active_id` is required to compute the bin's fixed price for constant-sum simulation.
 #[derive(Debug, Clone)]
@@ -80,6 +80,9 @@ pub struct LFJState {
     /// The active bin ID returned by `getActiveId()`.  Used to compute bin price:
     /// `price = (1 + bin_step/10000)^(active_id - 8388608)` in raw Y-per-X units.
     pub active_id: u32,
+    /// Adjacent bins: `(bin_id, reserve_x, reserve_y)`, sorted ascending by bin_id.
+    /// Includes the active bin itself.  Used for multi-bin traversal simulation.
+    pub bins: Vec<(u32, U256, U256)>,
 }
 
 // ── CSV loader ───────────────────────────────────────────────────────────────
@@ -148,12 +151,13 @@ pub fn load_lfj_pools_from_csv(cache_dir: &str) -> Result<Vec<LFJPoolInfo>> {
 
 // ── Per-block state fetcher ──────────────────────────────────────────────────
 
-/// Fetch the **active bin reserves** for all given LFJ pools in parallel.
+/// Number of bins to fetch on each side of the active bin.
+const BINS_PER_SIDE: u32 = 5;
+
+/// Fetch the **active bin reserves** and adjacent bins for all given LFJ pools in parallel.
 ///
-/// Calls `ILBPair.getActiveId()` followed by `ILBPair.getBin(activeId)` for every
-/// pool.  Only the active bin's reserves are returned — these are the reserves
-/// actually available for the next swap.  Pools that fail (e.g. no liquidity or
-/// reverted) are silently skipped.
+/// Calls `ILBPair.getActiveId()` then `ILBPair.getBin(id)` for `active_id ± BINS_PER_SIDE`.
+/// Pools that fail are silently skipped.
 pub async fn fetch_lfj_states(
     provider: Arc<Provider<Ws>>,
     pools: &[LFJPoolInfo],
@@ -165,22 +169,55 @@ pub async fn fetch_lfj_states(
             let addr = pool.address;
             async move {
                 // Step 1: get the active bin ID.
-                let active_id = match contract.get_active_id().call().await {
+                let active_id: u32 = match contract.get_active_id().call().await {
                     Ok(id) => id,
                     Err(_) => return None,
                 };
-                // Step 2: get the reserves of that specific bin.
-                match contract.get_bin(active_id).call().await {
-                    Ok((bin_reserve_x, bin_reserve_y)) => Some((
-                        addr,
-                        LFJState {
-                            reserve_x: U256::from(bin_reserve_x),
-                            reserve_y: U256::from(bin_reserve_y),
-                            active_id,
-                        },
-                    )),
-                    Err(_) => None,
-                }
+
+                // Step 2: fetch the active bin + BINS_PER_SIDE on each side.
+                let lo = active_id.saturating_sub(BINS_PER_SIDE);
+                let hi = active_id.saturating_add(BINS_PER_SIDE);
+
+                let bin_futures: Vec<_> = (lo..=hi)
+                    .map(|id| {
+                        let c = contract.clone();
+                        async move {
+                            match c.get_bin(id).call().await {
+                                Ok((rx, ry)) => {
+                                    let rx = U256::from(rx);
+                                    let ry = U256::from(ry);
+                                    if rx.is_zero() && ry.is_zero() {
+                                        None
+                                    } else {
+                                        Some((id, rx, ry))
+                                    }
+                                }
+                                Err(_) => None,
+                            }
+                        }
+                    })
+                    .collect();
+
+                let bin_results = join_all(bin_futures).await;
+                let mut bins: Vec<(u32, U256, U256)> = bin_results.into_iter().flatten().collect();
+                bins.sort_by_key(|(id, _, _)| *id);
+
+                // The active bin's reserves (for backward compat)
+                let (reserve_x, reserve_y) = bins
+                    .iter()
+                    .find(|(id, _, _)| *id == active_id)
+                    .map(|(_, rx, ry)| (*rx, *ry))
+                    .unwrap_or((U256::zero(), U256::zero()));
+
+                Some((
+                    addr,
+                    LFJState {
+                        reserve_x,
+                        reserve_y,
+                        active_id,
+                        bins,
+                    },
+                ))
             }
         })
         .collect();

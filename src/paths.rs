@@ -9,6 +9,125 @@ use crate::lfj::{LFJPoolInfo, LFJState};
 use crate::concentrated_liquidity;
 use crate::simulator::{SolidlyStableSimulator, UniswapV2Simulator};
 
+/// Simulate an LFJ Liquidity Book swap with multi-bin traversal.
+///
+/// LFJ bins are constant-sum: within a single bin, the exchange rate is fixed at
+/// `price(bin_id) = (1 + bin_step/10000)^(bin_id - 8388608)`.
+///
+/// When `zero_for_one` (sell tokenX for tokenY):
+///   - At the active bin, we can extract up to `reserve_y` by depositing tokenX at `price`.
+///   - If the swap exhausts tokenY in this bin, we move to the next **lower** bin (lower price).
+///
+/// When `!zero_for_one` (sell tokenY for tokenX):
+///   - At the active bin, we can extract up to `reserve_x` by depositing tokenY.
+///   - If the swap exhausts tokenX in this bin, we move to the next **higher** bin (higher price).
+///
+/// Fees are applied once to the entire input amount before bin traversal.
+fn simulate_lfj_swap(
+    amount_in: U256,
+    zero_for_one: bool,
+    lp: &LFJPoolInfo,
+    state: &LFJState,
+) -> Option<U256> {
+    const BASE_ID: i64 = 8_388_608;
+    const PRICE_SCALE: u64 = 1_000_000_000;
+    const MAX_BIN_CROSSES: usize = 10;
+
+    if state.bins.is_empty() {
+        return None;
+    }
+
+    // Apply fee to the total input once.
+    let fee_factor = U256::from(10_000u32.saturating_sub(lp.base_fee_bps));
+    let mut remaining_in = amount_in
+        .checked_mul(fee_factor)?
+        .checked_div(U256::from(10_000u64))?;
+
+    if remaining_in.is_zero() {
+        return Some(U256::zero());
+    }
+
+    // Build a sorted list of bins in the traversal direction.
+    // zero_for_one → iterate bins from active_id downward (decreasing price)
+    // !zero_for_one → iterate bins from active_id upward (increasing price)
+    let ordered_bins: Vec<&(u32, U256, U256)> = if zero_for_one {
+        // Bins with id <= active_id, sorted descending (start at active, go lower)
+        let mut v: Vec<_> = state.bins.iter().filter(|(id, _, _)| *id <= state.active_id).collect();
+        v.sort_by(|a, b| b.0.cmp(&a.0));
+        v
+    } else {
+        // Bins with id >= active_id, sorted ascending (start at active, go higher)
+        let mut v: Vec<_> = state.bins.iter().filter(|(id, _, _)| *id >= state.active_id).collect();
+        v.sort_by_key(|(id, _, _)| *id);
+        v
+    };
+
+    let mut total_out = U256::zero();
+
+    for (crosses, (bin_id, bin_rx, bin_ry)) in ordered_bins.iter().enumerate() {
+        if crosses >= MAX_BIN_CROSSES || remaining_in.is_zero() {
+            break;
+        }
+
+        let delta = (*bin_id as i64) - BASE_ID;
+        let delta_i32 = delta.clamp(-100_000, 100_000) as i32;
+        let price_f64 = (1.0_f64 + lp.bin_step as f64 / 10_000.0).powi(delta_i32);
+        if !price_f64.is_finite() || price_f64 <= 0.0 {
+            break;
+        }
+
+        let price_scaled = (price_f64 * PRICE_SCALE as f64) as u128;
+        if price_scaled == 0 {
+            break;
+        }
+
+        if zero_for_one {
+            // Selling X for Y: output = input_x * price; capped at bin's reserve_y
+            let max_out_from_remaining = remaining_in
+                .checked_mul(U256::from(price_scaled))?
+                .checked_div(U256::from(PRICE_SCALE))?;
+
+            if max_out_from_remaining <= *bin_ry {
+                // Fully consumed in this bin
+                total_out = total_out.checked_add(max_out_from_remaining)?;
+                remaining_in = U256::zero();
+            } else {
+                // Exhaust this bin's Y reserve, continue to next bin
+                total_out = total_out.checked_add(*bin_ry)?;
+                // How much X was consumed to deplete bin_ry: consumed_x = bin_ry / price
+                let consumed_x = bin_ry
+                    .checked_mul(U256::from(PRICE_SCALE))?
+                    .checked_div(U256::from(price_scaled))?;
+                remaining_in = remaining_in.saturating_sub(consumed_x.max(U256::one()));
+            }
+        } else {
+            // Selling Y for X: output = input_y / price; capped at bin's reserve_x
+            let max_out_from_remaining = remaining_in
+                .checked_mul(U256::from(PRICE_SCALE))?
+                .checked_div(U256::from(price_scaled))?;
+
+            if max_out_from_remaining <= *bin_rx {
+                // Fully consumed in this bin
+                total_out = total_out.checked_add(max_out_from_remaining)?;
+                remaining_in = U256::zero();
+            } else {
+                // Exhaust this bin's X reserve, continue to next bin
+                total_out = total_out.checked_add(*bin_rx)?;
+                // How much Y was consumed to deplete bin_rx: consumed_y = bin_rx * price
+                let consumed_y = bin_rx
+                    .checked_mul(U256::from(price_scaled))?
+                    .checked_div(U256::from(PRICE_SCALE))?;
+                remaining_in = remaining_in.saturating_sub(consumed_y.max(U256::one()));
+            }
+        }
+    }
+
+    if total_out.is_zero() {
+        return None;
+    }
+    Some(total_out)
+}
+
 #[derive(Debug, Clone)]
 pub struct ArbPath {
     pub nhop: u8,
@@ -25,7 +144,7 @@ impl ArbPath {
         let is_pool_1 = self.pool_1.address == *pool_addr;
         let is_pool_2 = self.pool_2.address == *pool_addr;
         let is_pool_3 = self.pool_3.address == *pool_addr;
-        return is_pool_1 || is_pool_2 || is_pool_3;
+        is_pool_1 || is_pool_2 || is_pool_3
     }
 
     pub fn get_pool(&self, i: u8) -> &AnyPool {
@@ -48,7 +167,7 @@ impl ArbPath {
         }
     }
 
-    pub fn should_blacklist(&self, blacklist_tokens: &Vec<H160>) -> bool {
+    pub fn should_blacklist(&self, blacklist_tokens: &[H160]) -> bool {
         for i in 0..self.nhop {
             let pool = self.get_pool(i);
             if blacklist_tokens.contains(&pool.token0) || blacklist_tokens.contains(&pool.token1) {
@@ -58,9 +177,13 @@ impl ArbPath {
         false
     }
     
-    pub fn simulate_mixed_path(
+    /// Simulate the full multi-hop swap starting from raw atomic units.
+    ///
+    /// Unlike `simulate_mixed_path` this does **not** multiply `amount_in_raw`
+    /// by 10^decimals — the caller is expected to have already done so.
+    pub fn simulate_mixed_path_raw(
         &self,
-        amount_in: U256,
+        amount_in_raw: U256,
         v2_reserves: &HashMap<H160, Reserve>,
         algebra_states: &HashMap<H160, AlgebraPoolFull>,
         lfj_states: &HashMap<H160, LFJState>,
@@ -68,15 +191,10 @@ impl ArbPath {
         if self.nhop == 0 || self.nhop > 3 {
             return None;
         }
-        let first_pool = self.get_pool(0);
-        let decimals = if self.zero_for_one_1 {
-            first_pool.decimals0
-        } else {
-            first_pool.decimals1
-        };
-        
-        let unit = U256::from(10).pow(U256::from(decimals));
-        let mut amount = amount_in * unit;
+        if amount_in_raw.is_zero() {
+            return Some(U256::zero());
+        }
+        let mut amount = amount_in_raw;
 
         for i in 0..self.nhop {
             let pool = self.get_pool(i);
@@ -84,7 +202,6 @@ impl ArbPath {
             
             match &pool.pool_type {
                 PoolType::V2(v2_pool) => {
-                     // Using reserve map for V2
                      if let Some(reserve) = v2_reserves.get(&pool.address) {
                          let (reserve_in, reserve_out) = if zero_for_one {
                              (reserve.reserve0, reserve.reserve1)
@@ -93,7 +210,6 @@ impl ArbPath {
                          };
                          let fee = U256::from(v2_pool.fee);
 
-                         // Solidly stable pools use x³y+xy³=k — different AMM math.
                          if v2_pool.version == DexVariant::SolidlyStable {
                              let (decimals_in, decimals_out) = if zero_for_one {
                                  (v2_pool.decimals0, v2_pool.decimals1)
@@ -112,10 +228,6 @@ impl ArbPath {
                 },
                 PoolType::Algebra(pool_full) => {
                      if let Some(state) = algebra_states.get(&pool.address) {
-                         // Using concentrated liquidity math with tick-boundary guard.
-                         // Pass state.tick (per-block) and pool_full.tick_spacing so the
-                         // simulator can reject swaps that would cross a tick boundary —
-                         // the single-tick formula wildly over-estimates output in that case.
                          if let Some(out) = concentrated_liquidity::calculate_amount_out(
                              amount,
                              state.sqrt_price_x96,
@@ -124,6 +236,7 @@ impl ArbPath {
                              zero_for_one,
                              state.tick,
                              pool_full.tick_spacing,
+                             &state.tick_data,
                          ) {
                              amount = out;
                          } else {
@@ -135,8 +248,6 @@ impl ArbPath {
                 }
                 PoolType::UniswapV3CL(pool_full) => {
                      if let Some(state) = algebra_states.get(&pool.address) {
-                         // UniswapV3CL uses identical concentrated liquidity math to Algebra.
-                         // Both store sqrtPriceX96 / liquidity / fee-in-ppm.
                          if let Some(out) = concentrated_liquidity::calculate_amount_out(
                              amount,
                              state.sqrt_price_x96,
@@ -145,6 +256,7 @@ impl ArbPath {
                              zero_for_one,
                              state.tick,
                              pool_full.tick_spacing,
+                             &state.tick_data,
                          ) {
                              amount = out;
                          } else {
@@ -155,61 +267,8 @@ impl ArbPath {
                      }
                 }
                 PoolType::LFJ(lp) => {
-                    // LFJ Liquidity Book — constant-sum bin simulation.
-                    //
-                    // Each bin has a FIXED price: p = (1 + bin_step/10000)^(active_id - 2^23).
-                    // Within a bin the AMM is constant-sum: amount_out = amount_in × p × (1-fee).
-                    // Output is capped at the available bin reserve (can't drain more than the bin holds).
-                    //
-                    // x·y=k on active-bin reserves is WRONG: when the bin is single-sided
-                    // (e.g. price just moved, reserve_x ≈ 0, reserve_y is large), x·y=k lets
-                    // a tiny input extract nearly all of reserve_y, creating fictitious 100%+ profits.
                     if let Some(state) = lfj_states.get(&pool.address) {
-                        // Bin price in raw Y-per-X units.
-                        const BASE_ID: i64 = 8_388_608; // 2^23 — LFJ price centre
-                        let delta = (state.active_id as i64) - BASE_ID;
-                        // Clamp extreme deltas (practically < ±20000 for any real token pair).
-                        let delta_i32 = delta.clamp(-100_000, 100_000) as i32;
-                        let price_f64 = (1.0_f64 + lp.bin_step as f64 / 10_000.0).powi(delta_i32);
-
-                        // Guard against NaN / infinity (can occur for extreme bin_step + delta).
-                        if !price_f64.is_finite() || price_f64 <= 0.0 {
-                            return None;
-                        }
-
-                        // Scale price to a u64 integer for U256 arithmetic.
-                        const PRICE_SCALE: u64 = 1_000_000_000; // 1e9 — plenty of precision
-                        // Use f64 → u128 cast to avoid u64 saturation/overflow before we get to U256.
-                        let price_scaled_u128 = (price_f64 * PRICE_SCALE as f64) as u128;
-                        if price_scaled_u128 == 0 {
-                            return None;
-                        }
-                        let fee_factor = 10_000u32.saturating_sub(lp.base_fee_bps);
-
-                        let amount_out = if zero_for_one {
-                            // X → Y: amount_out_Y = amount_in_X × price × (1 - fee)
-                            // Divisor: PRICE_SCALE * 10_000 — fits safely in u64.
-                            let out = amount
-                                .checked_mul(U256::from(price_scaled_u128))?
-                                .checked_mul(U256::from(fee_factor))?
-                                .checked_div(U256::from(PRICE_SCALE * 10_000u64))?;
-                            out.min(state.reserve_y)
-                        } else {
-                            // Y → X: amount_out_X = amount_in_Y / price × (1 - fee)
-                            // Divisor: price_scaled * 10_000 — use U256 to avoid u64 overflow.
-                            let divisor = U256::from(price_scaled_u128)
-                                .saturating_mul(U256::from(10_000u32));
-                            let out = amount
-                                .checked_mul(U256::from(PRICE_SCALE))?
-                                .checked_mul(U256::from(fee_factor))?
-                                .checked_div(divisor)?;
-                            out.min(state.reserve_x)
-                        };
-
-                        if amount_out.is_zero() {
-                            return None;
-                        }
-                        amount = amount_out;
+                        amount = simulate_lfj_swap(amount, zero_for_one, lp, state)?;
                     } else {
                         return None;
                     }
@@ -219,35 +278,62 @@ impl ArbPath {
         Some(amount)
     }
 
-    /// Compute net profit (amount_out - cost) for a given integer amount_in (in whole tokens).
+    pub fn simulate_mixed_path(
+        &self,
+        amount_in: U256,
+        v2_reserves: &HashMap<H160, Reserve>,
+        algebra_states: &HashMap<H160, AlgebraPoolFull>,
+        lfj_states: &HashMap<H160, LFJState>,
+    ) -> Option<U256> {
+        if self.nhop == 0 || self.nhop > 3 {
+            return None;
+        }
+        let first_pool = self.get_pool(0);
+        let decimals = if self.zero_for_one_1 {
+            first_pool.decimals0
+        } else {
+            first_pool.decimals1
+        };
+        
+        let unit = U256::from(10).pow(U256::from(decimals));
+        self.simulate_mixed_path_raw(amount_in * unit, v2_reserves, algebra_states, lfj_states)
+    }
+
+    /// Sub-token granularity for the optimizer.
+    /// 1000 = millitoken precision (search in 0.001-token increments).
+    const OPTIMIZER_GRANULARITY: u64 = 1000;
+
+    /// Compute net profit (amount_out - cost) for a given sub-token amount.
+    ///
+    /// `sub_tokens` is in millitoken units (when OPTIMIZER_GRANULARITY = 1000).
     /// Returns 0 if the simulation returns None or amount_out <= cost.
     fn profit_at(
         &self,
-        amount_in_tokens: u64,
+        sub_tokens: u64,
         token_in_decimals: u8,
         reserves: &HashMap<H160, Reserve>,
         algebra_states: &HashMap<H160, AlgebraPoolFull>,
         lfj_states: &HashMap<H160, LFJState>,
     ) -> u128 {
         let unit = U256::from(10u64).pow(U256::from(token_in_decimals));
-        let amount_in = U256::from(amount_in_tokens);
-        let cost = amount_in.saturating_mul(unit);
-        match self.simulate_mixed_path(amount_in, reserves, algebra_states, lfj_states) {
-            Some(out) if out > cost => (out - cost).as_u128(),
+        let amount_raw = U256::from(sub_tokens).saturating_mul(unit)
+            / U256::from(Self::OPTIMIZER_GRANULARITY);
+        if amount_raw.is_zero() {
+            return 0;
+        }
+        match self.simulate_mixed_path_raw(amount_raw, reserves, algebra_states, lfj_states) {
+            Some(out) if out > amount_raw => (out - amount_raw).as_u128(),
             _ => 0,
         }
     }
 
-    /// Find the amount_in (whole tokens) that maximises profit using ternary search.
+    /// Find the amount_in that maximises profit using ternary search.
     ///
-    /// The profit function is unimodal (concave): it rises from 0 as we add more tokens,
-    /// peaks where price-impact exactly offsets the spread, then falls back to 0.
-    /// Ternary search locates the peak in O(log n) evaluations (~80 for max=10 000).
-    ///
-    /// Returns `(best_amount_in_tokens, best_profit_raw_units)`.
+    /// Searches in sub-token units (millitokens for GRANULARITY=1000) for fine
+    /// precision. Returns `(best_amount_in_raw_atomic, best_profit_raw_atomic)`.
     pub fn optimize_amount_in(
         &self,
-        max_amount_in: U256,
+        max_sub_tokens: u64,
         _step_size: usize,           // kept for API compatibility, ignored
         reserves: &HashMap<H160, Reserve>,
         algebra_states: &HashMap<H160, AlgebraPoolFull>,
@@ -258,11 +344,10 @@ impl ArbPath {
         } else {
             self.pool_1.decimals1
         };
-        let max_tokens = max_amount_in.as_u64();
 
-        // --- Phase 1: ternary search over [0, max_tokens] ---
+        // --- Phase 1: ternary search over [0, max_sub_tokens] ---
         let mut lo: u64 = 0;
-        let mut hi: u64 = max_tokens;
+        let mut hi: u64 = max_sub_tokens;
 
         while hi.saturating_sub(lo) > 2 {
             let third = (hi - lo) / 3;
@@ -278,13 +363,13 @@ impl ArbPath {
         }
 
         // --- Phase 2: exhaustive scan over the tiny residual window ---
-        let mut best_tokens: u64 = 0;
+        let mut best_sub: u64 = 0;
         let mut best_profit_raw: u128 = 0;
         for t in lo..=hi {
             let p = self.profit_at(t, token_in_decimals, reserves, algebra_states, lfj_states);
             if p > best_profit_raw {
                 best_profit_raw = p;
-                best_tokens = t;
+                best_sub = t;
             }
         }
 
@@ -293,30 +378,28 @@ impl ArbPath {
         }
 
         let unit = U256::from(10u64).pow(U256::from(token_in_decimals));
-        let profit_u256 = U256::from(best_profit_raw);
+        // Convert sub-tokens to raw atomic amount
+        let best_raw = U256::from(best_sub).saturating_mul(unit)
+            / U256::from(Self::OPTIMIZER_GRANULARITY);
         // cross-check: re-simulate to get actual out, derive profit cleanly
-        let amount_in = U256::from(best_tokens);
-        let cost = amount_in.saturating_mul(unit);
-        let profit = match self.simulate_mixed_path(amount_in, reserves, algebra_states, lfj_states) {
-            Some(out) if out > cost => out - cost,
-            _ => profit_u256,
+        let profit = match self.simulate_mixed_path_raw(best_raw, reserves, algebra_states, lfj_states) {
+            Some(out) if out > best_raw => out - best_raw,
+            _ => U256::from(best_profit_raw),
         };
 
-        (amount_in, profit)
+        (best_raw, profit)
     }
 
     /// Automatically find the profit-maximising amount_in without a fixed ceiling.
     ///
-    /// **Phase 1 — exponential probe**: start at 1 token and double until profit stops
-    /// growing (or a hard safety cap of 1 000 000 tokens is hit).  This brackets the
-    /// peak: `[prev, current]`.
+    /// **Phase 1 — exponential probe**: start at 1 millitoken and double until profit
+    /// stops growing (or a hard safety cap is hit). This brackets the peak.
     ///
-    /// **Phase 2 — ternary search** in that bracket to locate the exact integer peak.
+    /// **Phase 2 — ternary search** in that bracket to locate the exact peak.
     ///
-    /// **Phase 3 — exhaustive scan** over the tiny residual window (≤ 3 tokens wide).
+    /// **Phase 3 — exhaustive scan** over the tiny residual window (≤ 3 steps wide).
     ///
-    /// The whole process takes at most ~60 simulate calls per path — fast enough to
-    /// run on every block for every candidate path.
+    /// Returns `(raw_amount_in_atomic, raw_profit_atomic)`.
     pub fn optimize_amount_in_mixed(
         &self,
         _ignored: U256,                   // kept for call-site compatibility
@@ -330,12 +413,14 @@ impl ArbPath {
             self.pool_1.decimals1
         };
 
-        const HARD_CAP: u64 = 1_000_000; // never borrow more than 1 M tokens
+        // Hard cap in sub-token units: 1M tokens × GRANULARITY
+        const HARD_CAP: u64 = 1_000_000 * 1000; // 1B sub-tokens = 1M whole tokens
 
         // --- Phase 1: exponential probe to bracket the peak ---
         let mut prev_t: u64 = 0;
         let mut prev_p: u128 = 0;
-        let mut probe: u64 = 1;
+        // Start at 1 whole token worth of sub-tokens
+        let mut probe: u64 = Self::OPTIMIZER_GRANULARITY;
         loop {
             let p = self.profit_at(probe, token_in_decimals, v2_reserves, algebra_states, lfj_states);
             if p <= prev_p {
@@ -345,7 +430,7 @@ impl ArbPath {
             prev_p = p;
             prev_t = probe;
             if probe >= HARD_CAP {
-                break; // already at cap; peak is within [prev_t/2, HARD_CAP]
+                break;
             }
             probe = (probe * 2).min(HARD_CAP);
         }
@@ -355,9 +440,9 @@ impl ArbPath {
             return (U256::zero(), U256::zero());
         }
 
-        // --- Phase 2: ternary search in [prev_t, probe] ---
+        // --- Phase 2: ternary search in [prev_t, probe] (in sub-token units) ---
         let result = self.optimize_amount_in(
-            U256::from(probe),
+            probe,
             1,
             v2_reserves,
             algebra_states,
@@ -366,10 +451,11 @@ impl ArbPath {
         // If the ternary search found nothing better than prev_t, return prev_t directly.
         if result.1 == U256::zero() && prev_p > 0 {
             let unit = U256::from(10u64).pow(U256::from(token_in_decimals));
-            let cost = U256::from(prev_t).saturating_mul(unit);
-            let out = self.simulate_mixed_path(U256::from(prev_t), v2_reserves, algebra_states, lfj_states);
-            let profit = out.map(|o| if o > cost { o - cost } else { U256::zero() }).unwrap_or(U256::zero());
-            return (U256::from(prev_t), profit);
+            let prev_raw = U256::from(prev_t).saturating_mul(unit)
+                / U256::from(Self::OPTIMIZER_GRANULARITY);
+            let out = self.simulate_mixed_path_raw(prev_raw, v2_reserves, algebra_states, lfj_states);
+            let profit = out.map(|o| if o > prev_raw { o - prev_raw } else { U256::zero() }).unwrap_or(U256::zero());
+            return (prev_raw, profit);
         }
         result
     }

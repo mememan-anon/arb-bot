@@ -2,7 +2,6 @@ use anyhow::{anyhow, Result};
 use ethers::contract::abigen;
 use ethers::providers::{Middleware, Provider, Ws};
 use ethers::types::{Bytes, H160, U256};
-use futures::future::join_all;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -84,10 +83,82 @@ pub fn load_uniswapv3cl_full_from_csv(cache_dir: &str) -> Result<Vec<AlgebraPool
             liquidity: U256::zero(),
             tick: 0,
             tick_spacing,
+            tick_data: HashMap::new(),
         });
     }
 
     Ok(pools)
+}
+
+/// Fetch a small set of V3CL pools by address directly from chain.
+/// Used to bootstrap explicit price-oracle pools that may not be in the CSV cache.
+/// Both static fields (token0/1, fee, decimals) and live state (slot0, liquidity)
+/// are populated in a single async pass.
+pub async fn fetch_v3cl_oracle_pools(
+    provider: Arc<Provider<Ws>>,
+    addresses: Vec<H160>,
+) -> Vec<AlgebraPoolFull> {
+    use futures::future::join_all;
+
+    let futs = addresses.into_iter().map(|addr| {
+        let provider = provider.clone();
+        async move {
+            let pool = UniswapV3CLPool::new(addr, provider.clone());
+
+            let ct0   = pool.token_0();
+            let ct1   = pool.token_1();
+            let cfee  = pool.fee();
+            let cs0   = pool.slot_0();
+            let cliq  = pool.liquidity();
+            let (t0_res, t1_res, fee_res, slot0_res, liq_res) = tokio::join!(
+                ct0.call(), ct1.call(), cfee.call(), cs0.call(), cliq.call(),
+            );
+
+            let token0 = match t0_res {
+                Ok(a) => a,
+                Err(e) => { warn!("price oracle pool {:?} token0() failed: {:?}", addr, e); return None; }
+            };
+            let token1 = match t1_res {
+                Ok(a) => a,
+                Err(e) => { warn!("price oracle pool {:?} token1() failed: {:?}", addr, e); return None; }
+            };
+            let fee = fee_res.unwrap_or(0) as u32;
+            let (sqrt_price_x96, tick) = match slot0_res {
+                Ok(s) => (s.0, s.1 as i32),
+                Err(_) => (U256::zero(), 0i32),
+            };
+            let liquidity = U256::from(liq_res.unwrap_or(0u128));
+
+            let erc0 = UniswapV3CLERC20::new(token0, provider.clone());
+            let erc1 = UniswapV3CLERC20::new(token1, provider.clone());
+            let cd0 = erc0.decimals();
+            let cd1 = erc1.decimals();
+            let (d0_res, d1_res) = tokio::join!(cd0.call(), cd1.call());
+            let decimals0 = d0_res.unwrap_or(18);
+            let decimals1 = d1_res.unwrap_or(18);
+
+            info!(
+                "Loaded price oracle pool {:?}: {:?}/{:?}  fee={}  dec=({},{})",
+                addr, token0, token1, fee, decimals0, decimals1
+            );
+
+            Some(AlgebraPoolFull {
+                address: addr,
+                token0,
+                token1,
+                decimals0,
+                decimals1,
+                fee,
+                sqrt_price_x96,
+                liquidity,
+                tick,
+                tick_spacing: 1,
+                tick_data: HashMap::new(),
+            })
+        }
+    });
+
+    join_all(futs).await.into_iter().flatten().collect()
 }
 
 /// Legacy thin-info loader kept for any callers that need `AlgebraPoolInfo`.
@@ -218,8 +289,9 @@ pub async fn fetch_full_uniswapv3cl_pools(
 
             if slot0_ok && liq_ok && sd.len() >= 64 && ld.len() >= 32 {
                 p.sqrt_price_x96 = U256::from_big_endian(&sd[0..32]);
-                // int24 ABI-encoded as 32 bytes sign-extended; last 4 bytes → i32
-                p.tick = i32::from_be_bytes([sd[28], sd[29], sd[30], sd[31]]);
+                // int24 is ABI-encoded as the second 32-byte word (bytes 32-63),
+                // sign-extended to int256.  Read last 4 bytes of that word → i32.
+                p.tick = i32::from_be_bytes([sd[60], sd[61], sd[62], sd[63]]);
                 p.liquidity = U256::from_big_endian(&ld[0..32]);
                 result.push(p);
             }
@@ -236,41 +308,293 @@ pub async fn fetch_full_uniswapv3cl_pools(
     result
 }
 
-// ── Per-block state refresh ───────────────────────────────────────────────────
+// ── Per-block / stale-guard state refresh ────────────────────────────────────
 
-/// Refresh sqrtPriceX96, liquidity, and tick for all tracked UniswapV3-CL pools.
+/// Refresh sqrtPriceX96, liquidity, and tick for a slice of UniswapV3-CL pools
+/// using Multicall3 aggregate3 batching.
 ///
-/// Called every block (same pattern as `fetch_algebra_states`).
+/// Called for 1–3 pools at a time (targeted per-path refresh before execution).
+/// Uses the same BATCH_SIZE and slot0()+liquidity() pattern as
+/// `fetch_full_uniswapv3cl_pools`.
 pub async fn fetch_uniswapv3cl_states(
     provider: Arc<Provider<Ws>>,
     pools: &[AlgebraPoolFull],
 ) -> HashMap<H160, AlgebraState> {
-    let futures: Vec<_> = pools
-        .iter()
-        .map(|info| {
-            let pool = UniswapV3CLPool::new(info.address, provider.clone());
-            let addr = info.address;
-            async move {
-                let cs = pool.slot_0();
-                let cl = pool.liquidity();
-                let (slot0_res, liq_res) = tokio::join!(cs.call(), cl.call());
+    use ethers::abi::{self, ParamType, Token};
 
-                if let (Ok(slot0), Ok(liq)) = (slot0_res, liq_res) {
-                    Some((
-                        addr,
-                        AlgebraState {
-                            sqrt_price_x96: U256::from(slot0.0),
-                            liquidity: U256::from(liq),
-                            tick: slot0.1,
-                            fee: 0,
-                        },
-                    ))
-                } else {
-                    None
-                }
+    if pools.is_empty() {
+        return HashMap::new();
+    }
+
+    // slot0()     selector: keccak256("slot0()")     = 0x3850c7bd
+    // liquidity() selector: keccak256("liquidity()") = 0x1a686502
+    let slot0_cd: Vec<u8> = vec![0x38, 0x50, 0xc7, 0xbd];
+    let liq_cd:   Vec<u8> = vec![0x1a, 0x68, 0x65, 0x02];
+
+    let mc_addr = H160::from_str(MULTICALL3_ADDR).expect("multicall3 addr");
+    let mut out: HashMap<H160, AlgebraState> = HashMap::with_capacity(pools.len());
+
+    for (batch_idx, chunk) in pools.chunks(BATCH_SIZE).enumerate() {
+        let call_tokens: Vec<Token> = chunk
+            .iter()
+            .flat_map(|p| [
+                Token::Tuple(vec![
+                    Token::Address(p.address),
+                    Token::Bool(true),
+                    Token::Bytes(slot0_cd.clone()),
+                ]),
+                Token::Tuple(vec![
+                    Token::Address(p.address),
+                    Token::Bool(true),
+                    Token::Bytes(liq_cd.clone()),
+                ]),
+            ])
+            .collect();
+
+        let encoded = abi::encode(&[Token::Array(call_tokens)]);
+        let mut calldata = Vec::with_capacity(4 + encoded.len());
+        calldata.extend_from_slice(&AGGREGATE3_SEL);
+        calldata.extend_from_slice(&encoded);
+
+        let tx = ethers::types::TransactionRequest::new()
+            .to(mc_addr)
+            .data(calldata);
+
+        let raw: Bytes = match provider.call(&tx.into(), None).await {
+            Ok(b) => b,
+            Err(e) => {
+                warn!("fetch_uniswapv3cl_states multicall batch {} failed: {:?}", batch_idx, e);
+                continue;
             }
-        })
-        .collect();
+        };
 
-    join_all(futures).await.into_iter().flatten().collect()
+        let decoded = match abi::decode(
+            &[ParamType::Array(Box::new(ParamType::Tuple(vec![
+                ParamType::Bool,
+                ParamType::Bytes,
+            ])))],
+            &raw,
+        ) {
+            Ok(d) => d,
+            Err(e) => {
+                warn!("fetch_uniswapv3cl_states multicall decode error (batch {}): {:?}", batch_idx, e);
+                continue;
+            }
+        };
+
+        let responses: Vec<(bool, Vec<u8>)> =
+            if let Some(Token::Array(arr)) = decoded.into_iter().next() {
+                arr.into_iter()
+                    .filter_map(|t| {
+                        if let Token::Tuple(mut f) = t {
+                            if f.len() >= 2 {
+                                let ok = matches!(f[0], Token::Bool(true));
+                                let data = if let Token::Bytes(b) = f.remove(1) { b } else { vec![] };
+                                Some((ok, data))
+                            } else { None }
+                        } else { None }
+                    })
+                    .collect()
+            } else {
+                continue;
+            };
+
+        if responses.len() < chunk.len() * 2 {
+            warn!("fetch_uniswapv3cl_states batch {}: expected {} results, got {}",
+                batch_idx, chunk.len() * 2, responses.len());
+        }
+
+        for (i, p) in chunk.iter().enumerate() {
+            let slot0_idx = i * 2;
+            let liq_idx   = i * 2 + 1;
+            if liq_idx >= responses.len() { break; }
+
+            let (slot0_ok, ref sd) = responses[slot0_idx];
+            let (liq_ok, ref ld)   = responses[liq_idx];
+
+            if slot0_ok && liq_ok && sd.len() >= 64 && ld.len() >= 32 {
+                let sqrt_price = U256::from_big_endian(&sd[0..32]);
+                // int24 tick is in the second 32-byte ABI word (bytes 32-63)
+                let tick = i32::from_be_bytes([sd[60], sd[61], sd[62], sd[63]]);
+                let liquidity = U256::from_big_endian(&ld[0..32]);
+                out.insert(p.address, AlgebraState {
+                    sqrt_price_x96: sqrt_price,
+                    liquidity,
+                    tick,
+                    fee: 0, // fee unchanged; updated only on Swap events
+                });
+            }
+        }
+    }
+
+    out
+}
+
+// ── Tick-data enrichment ──────────────────────────────────────────────────────
+
+/// Selector for `ticks(int24)` — keccak256("ticks(int24)")[0..4].
+/// Works for both Algebra (returns liquidityDelta at bytes 32-63) and
+/// UniswapV3 (returns liquidityNet at bytes 32-63).
+const TICKS_SEL: [u8; 4] = [0xf3, 0x0d, 0xba, 0x93];
+
+/// Number of tick-spacing multiples to fetch on each side of the current tick.
+const TICKS_PER_SIDE: i32 = 5;
+
+/// Maximum tick queries per Multicall3 batch.
+const TICK_BATCH_SIZE: usize = 5000;
+
+/// Floor-division of `tick` to the nearest multiple of `spacing`.
+fn floor_tick(tick: i32, spacing: i32) -> i32 {
+    tick - tick.rem_euclid(spacing)
+}
+
+/// Populate `tick_data` for a slice of CL pools using Multicall3.
+///
+/// For each pool, queries `ticks(t)` at ±`TICKS_PER_SIDE` multiples of
+/// `tick_spacing` around the current tick.  Only non-zero `liquidityNet`
+/// values are stored, keeping the HashMap small.
+///
+/// Works for both Algebra and UniswapV3CL pools — both ABI-encode
+/// `liquidityNet` / `liquidityDelta` (int128) at bytes 32..64 of the return.
+pub async fn enrich_tick_data(
+    provider: Arc<Provider<Ws>>,
+    pools: &mut [AlgebraPoolFull],
+) {
+    use ethers::abi::{self, ParamType, Token};
+
+    if pools.is_empty() {
+        return;
+    }
+
+    // Build list of (pool_index, pool_address, tick_value) to query.
+    let mut queries: Vec<(usize, H160, i32)> = Vec::new();
+
+    for (idx, p) in pools.iter().enumerate() {
+        if p.tick_spacing <= 0 || p.liquidity.is_zero() {
+            continue;
+        }
+        let base = floor_tick(p.tick, p.tick_spacing);
+        for offset in -TICKS_PER_SIDE..=TICKS_PER_SIDE {
+            let t = base + offset * p.tick_spacing;
+            if t >= -887272 && t <= 887272 {
+                queries.push((idx, p.address, t));
+            }
+        }
+    }
+
+    if queries.is_empty() {
+        return;
+    }
+
+    let mc_addr = H160::from_str(MULTICALL3_ADDR).expect("multicall3 addr");
+    let total_queries = queries.len();
+    let mut enriched = 0usize;
+
+    for chunk in queries.chunks(TICK_BATCH_SIZE) {
+        // Build call tokens
+        let call_tokens: Vec<Token> = chunk
+            .iter()
+            .map(|(_idx, addr, tick_val)| {
+                // ABI-encode int24 as int256 (sign-extended 32 bytes)
+                let tick_bytes = {
+                    let val = *tick_val as i32;
+                    let mut buf = if val < 0 { [0xffu8; 32] } else { [0u8; 32] };
+                    let be = val.to_be_bytes();
+                    buf[28] = be[0];
+                    buf[29] = be[1];
+                    buf[30] = be[2];
+                    buf[31] = be[3];
+                    buf
+                };
+                let mut calldata = Vec::with_capacity(36);
+                calldata.extend_from_slice(&TICKS_SEL);
+                calldata.extend_from_slice(&tick_bytes);
+
+                Token::Tuple(vec![
+                    Token::Address(*addr),
+                    Token::Bool(true), // allowFailure
+                    Token::Bytes(calldata),
+                ])
+            })
+            .collect();
+
+        let encoded = abi::encode(&[Token::Array(call_tokens)]);
+        let mut calldata = Vec::with_capacity(4 + encoded.len());
+        calldata.extend_from_slice(&AGGREGATE3_SEL);
+        calldata.extend_from_slice(&encoded);
+
+        let tx = ethers::types::TransactionRequest::new()
+            .to(mc_addr)
+            .data(calldata);
+
+        let raw: Bytes = match provider.call(&tx.into(), None).await {
+            Ok(b) => b,
+            Err(e) => {
+                warn!("tick-data multicall batch failed: {:?}", e);
+                continue;
+            }
+        };
+
+        // Decode (bool, bytes)[]
+        let decoded = match abi::decode(
+            &[ParamType::Array(Box::new(ParamType::Tuple(vec![
+                ParamType::Bool,
+                ParamType::Bytes,
+            ])))],
+            &raw,
+        ) {
+            Ok(d) => d,
+            Err(e) => {
+                warn!("tick-data multicall decode error: {:?}", e);
+                continue;
+            }
+        };
+
+        let responses: Vec<(bool, Vec<u8>)> =
+            if let Some(Token::Array(arr)) = decoded.into_iter().next() {
+                arr.into_iter()
+                    .filter_map(|t| {
+                        if let Token::Tuple(mut f) = t {
+                            if f.len() >= 2 {
+                                let ok = matches!(f[0], Token::Bool(true));
+                                let data = if let Token::Bytes(b) = f.remove(1) { b } else { vec![] };
+                                Some((ok, data))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            } else {
+                continue;
+            };
+
+        // Parse liquidityNet from bytes 32..64 of each response
+        for (i, (pool_idx, _addr, tick_val)) in chunk.iter().enumerate() {
+            if i >= responses.len() {
+                break;
+            }
+            let (ok, ref data) = responses[i];
+            if !ok || data.len() < 64 {
+                continue;
+            }
+            // int128 is ABI-encoded as int256 (sign-extended) at bytes 32..64
+            let mut liq_net_bytes = [0u8; 16];
+            liq_net_bytes.copy_from_slice(&data[48..64]); // last 16 bytes of the 32-byte slot
+            let liq_net = i128::from_be_bytes(liq_net_bytes);
+            if liq_net != 0 {
+                pools[*pool_idx].tick_data.insert(*tick_val, liq_net);
+                enriched += 1;
+            }
+        }
+    }
+
+    info!(
+        "Tick-data enrichment: {} non-zero entries across {} queries for {} pools",
+        enriched,
+        total_queries,
+        pools.len(),
+    );
 }

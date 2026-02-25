@@ -173,31 +173,34 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
         uint x0 = reserveIn  * scaleIn;
         uint y0 = reserveOut * scaleOut;
         uint dx = amountIn   * scaleIn;
-        uint k  = x0 * y0 * (x0 * x0 + y0 * y0) / 1e36;  // k normalised to avoid overflow
         uint x1 = x0 + dx;
 
-        // Newton-Raphson: solve y s.t. k(x1, y) == k, starting from y0
-        // f(y)  = x1*y*(x1²+y²) - k*1e36    (bring k back to raw scale)
-        // f'(y) = x1*(x1²+3*y²)
-        uint kRaw = x0 * y0 * (x0 * x0 + y0 * y0);  // original invariant
+        // Compute invariant k = x0*y0*(x0²+y0²) normalised by 1e54 to avoid
+        // overflow.  Using staged mulDiv matches the Solidly/Aerodrome reference.
+        // k = (x0*y0/1e18) * (x0²/1e18 + y0²/1e18) / 1e18
+        uint k = mulDiv(
+            mulDiv(x0, y0, 1e18),
+            mulDiv(x0, x0, 1e18) + mulDiv(y0, y0, 1e18),
+            1e18
+        );
+
+        // Newton-Raphson: find y1 s.t. f(x1, y1) == k (same normalisation)
+        // f(y)  = (x1*y/1e18) * (x1²/1e18 + y²/1e18) / 1e18
+        // f'(y) = x1 * (x1²/1e18 + 3*y²/1e18) / 1e18
         uint y = y0;
         for (uint i; i < 255; ) {
-            uint y2 = y * y;
-            uint fVal  = x1 * y / 1e18 * (x1 * x1 / 1e18 + y2 / 1e18) / 1e18;  // normalised f
-            // simpler: use integer arithmetic keeping raw units
-            // f(y) = x1*y*(x1^2 + y^2) vs kRaw
             uint fNum  = mulDiv(x1, y, 1e18);
-            uint fNum2 = mulDiv(fNum, x1 * x1 / 1e18 + y * y / 1e18, 1e18);
-            if (fNum2 >= kRaw / 1e18) {
-                uint excess = fNum2 - kRaw / 1e18;
-                uint fDer   = mulDiv(x1, x1 * x1 / 1e18 + 3 * y * y / 1e18, 1e18);
+            uint fNum2 = mulDiv(fNum, mulDiv(x1, x1, 1e18) + mulDiv(y, y, 1e18), 1e18);
+            if (fNum2 >= k) {
+                uint excess = fNum2 - k;
+                uint fDer   = mulDiv(x1, mulDiv(x1, x1, 1e18) + mulDiv(3 * y, y, 1e18), 1e18);
                 if (fDer == 0) break;
                 uint step = mulDiv(excess, 1e18, fDer);
                 if (step == 0) break;
                 y = y > step ? y - step : 0;
             } else {
-                uint deficit = kRaw / 1e18 - fNum2;
-                uint fDer    = mulDiv(x1, x1 * x1 / 1e18 + 3 * y * y / 1e18, 1e18);
+                uint deficit = k - fNum2;
+                uint fDer    = mulDiv(x1, mulDiv(x1, x1, 1e18) + mulDiv(3 * y, y, 1e18), 1e18);
                 if (fDer == 0) break;
                 uint step = mulDiv(deficit, 1e18, fDer);
                 if (step == 0) break;
@@ -210,8 +213,50 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
         return dy / scaleOut;
     }
 
-    function mulDiv(uint a, uint b, uint denom) internal pure returns (uint) {
-        return (a * b) / denom;
+    /// @dev 512-bit safe mulDiv — prevents overflow on large Solidly stable reserves.
+    ///      Equivalent to Uniswap v3 FullMath.mulDiv: computes floor(a*b/denom)
+    ///      without overflow by using a 512-bit intermediate (two 256-bit words).
+    function mulDiv(uint256 a, uint256 b, uint256 denom) internal pure returns (uint256 result) {
+        require(denom > 0, "mulDiv: denom 0");
+        unchecked {
+            // Compute 512-bit product [prod1 prod0] = a * b
+            uint256 prod0;
+            uint256 prod1;
+            assembly {
+                let mm := mulmod(a, b, not(0))
+                prod0 := mul(a, b)
+                prod1 := sub(sub(mm, prod0), lt(mm, prod0))
+            }
+            // If high word is zero the result fits in 256 bits — fast path
+            if (prod1 == 0) {
+                result = prod0 / denom;
+                return result;
+            }
+            // Result must fit in 256 bits
+            require(prod1 < denom, "mulDiv: overflow");
+            // Subtract remainder so division is exact
+            uint256 remainder;
+            assembly { remainder := mulmod(a, b, denom) }
+            assembly {
+                prod1 := sub(prod1, gt(remainder, prod0))
+                prod0 := sub(prod0, remainder)
+            }
+            // Factor powers of two out of denom and shift dividend accordingly
+            uint256 twos;
+            assembly { twos := and(sub(0, denom), denom) }
+            assembly { denom := div(denom, twos) }
+            assembly { prod0 := div(prod0, twos) }
+            assembly { prod0 := or(prod0, mul(prod1, add(div(sub(0, twos), twos), 1))) }
+            // Compute modular inverse of denom mod 2^256 via Newton iterations
+            uint256 inv = (3 * denom) ^ 2;
+            inv *= 2 - denom * inv;
+            inv *= 2 - denom * inv;
+            inv *= 2 - denom * inv;
+            inv *= 2 - denom * inv;
+            inv *= 2 - denom * inv;
+            inv *= 2 - denom * inv;
+            result = prod0 * inv;
+        }
     }
 
     function _swapSolidlyStablePair(
@@ -322,17 +367,19 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
 
     function _execute(bytes memory data) internal returns (uint amountOut) {
         uint8 nhop;
+        uint256 minOut;
 
         assembly {
-            // Header : amountIn (32), flashloan (32), loanFrom (32) = 96 bytes (0x60)
+            // Header : amountIn (32), flashloan (32), loanFrom (32), minOut (32) = 128 bytes (0x80)
             // PathParam: router (32), tokenIn (32), tokenOut (32), poolType (32), fee (32) = 160 bytes (0xa0)
-            // nhop = (len - 0x60) / 0xa0
+            // nhop = (len - 0x80) / 0xa0
 
             let len := mload(data)
-            nhop := div(sub(len, 0x60), 0xa0)
+            nhop := div(sub(len, 0x80), 0xa0)
 
             let offset := add(data, 0x20)
             amountOut := mload(offset)
+            minOut := mload(add(offset, 0x60))  // 4th header slot
         }
 
         for (uint8 i; i < nhop; ) {
@@ -344,9 +391,9 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
 
             assembly {
                 // data[0x20] = first byte after the length prefix
-                // header = 3 slots (0x60), so params start at data + 0x20 + 0x60 = data + 0x80
+                // header = 4 slots (0x80), so params start at data + 0x20 + 0x80 = data + 0xa0
                 // each hop is 0xa0 bytes (5 slots)
-                let offset := add(data, 0x80)
+                let offset := add(data, 0xa0)
                 offset := add(offset, mul(0xa0, i))
 
                 router   := mload(offset)
@@ -383,6 +430,12 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
             }
         }
 
+        // Slippage protection: revert early if output is below the minimum
+        // expected by the off-chain simulation.  This avoids wasting gas on
+        // transactions that would be unprofitable.
+        if (minOut > 0) {
+            require(amountOut >= minOut, "slippage");
+        }
     }
 
     function receiveFlashLoan(
@@ -497,15 +550,16 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
             //   offset+0x00 = amountIn   (slot 0)
             //   offset+0x20 = useLoan    (slot 1)
             //   offset+0x40 = loanPool   (slot 2)
-            //   offset+0x60 = hop0.router   (slot 3)
-            //   offset+0x80 = hop0.tokenIn  (slot 4)  ← token we borrowed
-            //   offset+0xa0 = hop0.tokenOut (slot 5)
-            //   offset+0xc0 = hop0.poolType (slot 6)
-            //   offset+0xe0 = hop0.fee      (slot 7)  ← loan pool fee in bps
+            //   offset+0x60 = minOut     (slot 3)
+            //   offset+0x80 = hop0.router   (slot 4)
+            //   offset+0xa0 = hop0.tokenIn  (slot 5)  ← token we borrowed
+            //   offset+0xc0 = hop0.tokenOut (slot 6)
+            //   offset+0xe0 = hop0.poolType (slot 7)
+            //   offset+0x100 = hop0.fee     (slot 8)  ← loan pool fee in bps
             let offset := add(data, 0x20)
             loanPool := mload(add(offset, 0x40))
-            tokenIn  := mload(add(offset, 0x80))
-            feeBps   := mload(add(offset, 0xe0))
+            tokenIn  := mload(add(offset, 0xa0))
+            feeBps   := mload(add(offset, 0x100))
         }
 
         require(msg.sender == loanPool, "not loanPool");
@@ -549,7 +603,9 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
 
             assembly {
                 // the first tokenIn is the token we flashloan
-                tokenBorrow := calldataload(0x80)
+                // header: amountIn(0x00), useLoan(0x20), loanPool(0x40), minOut(0x60)
+                // hop0.router = 0x80, hop0.tokenIn = 0xa0
+                tokenBorrow := calldataload(0xa0)
             }
 
             if (useLoan == 1) {

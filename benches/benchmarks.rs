@@ -338,6 +338,7 @@ pub fn benchmark_function(_: &mut Criterion) {
                 loan_from,
                 max_priority_fee_per_gas,
                 max_fee_per_gas,
+                U256::zero(), // min_out (0 = no slippage check in benchmark)
             )
             .await
             .unwrap();

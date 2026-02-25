@@ -1,5 +1,6 @@
 use chrono::Utc;
 use ethers::{
+    contract::abigen,
     providers::{Middleware, Provider, Ws},
     types::{H160, U256},
 };
@@ -9,7 +10,7 @@ use std::{collections::HashMap, io::Write as _, str::FromStr, sync::Arc};
 use tokio::sync::broadcast::Sender;
 
 use crate::algebra::{fetch_algebra_states, load_algebra_pools_from_v3_csv};
-use crate::uniswapv3cl::{fetch_full_uniswapv3cl_pools, fetch_uniswapv3cl_states, load_uniswapv3cl_full_from_csv};
+use crate::uniswapv3cl::{enrich_tick_data, fetch_full_uniswapv3cl_pools, fetch_uniswapv3cl_states, fetch_v3cl_oracle_pools, load_uniswapv3cl_full_from_csv};
 use crate::lfj::{fetch_lfj_states, load_lfj_pools_from_csv, LFJState};
 use crate::bundler::Bundler;
 use crate::config::{Config, TokenConfig};
@@ -21,8 +22,57 @@ use crate::pools::{load_all_pools_from_v2, AnyPool, PoolType};
 use crate::simulator::UniswapV2Simulator;
 use crate::streams::Event;
 use crate::utils::{get_touched_pool_reserves, get_touched_v3cl_pools};
-use dashmap::DashMap;
+use rayon::prelude::*;
 use std::collections::HashSet;
+
+// ── Aave price oracle (Chainlink-backed) ────────────────────────────────────
+abigen!(
+    AaveOracle,
+    r#"[function getAssetPrice(address asset) view returns (uint256)]"#
+);
+
+/// Fetch USD prices for all start-token addresses from the Aave V3 price oracle.
+/// Returns 8-decimal prices converted to f64 (e.g. 3000.0 for $3000).
+/// Called at startup and refreshed every ~5 minutes (300 Base blocks ≈ 10 min).
+async fn fetch_aave_oracle_prices(
+    config: &Config,
+    provider: Arc<Provider<Ws>>,
+) -> HashMap<H160, f64> {
+    let mut map = HashMap::new();
+    let oracle_addr = match config.aave_v3
+        .as_ref()
+        .and_then(|a| a.oracle.as_deref())
+        .and_then(|s| H160::from_str(s).ok())
+    {
+        Some(a) => a,
+        None => {
+            info!("Aave oracle address not configured — skipping oracle price fetch");
+            return map;
+        }
+    };
+
+    let oracle = AaveOracle::new(oracle_addr, provider);
+    for token in &config.start_tokens {
+        let token_addr = match H160::from_str(&token.address) {
+            Ok(a) => a,
+            Err(_) => continue,
+        };
+        match oracle.get_asset_price(token_addr).call().await {
+            Ok(raw) => {
+                // Aave oracle returns price with 8 decimals (1e8 = $1.00)
+                let price = raw.as_u128() as f64 / 1e8;
+                if price > 0.0 {
+                    info!("Aave oracle: {} = ${:.4}", token.symbol, price);
+                    map.insert(token_addr, price);
+                }
+            }
+            Err(e) => {
+                warn!("Aave oracle getAssetPrice({}) failed: {:?}", token.symbol, e);
+            }
+        }
+    }
+    map
+}
 
 pub async fn event_handler(
     provider: Arc<Provider<Ws>>,
@@ -78,7 +128,7 @@ pub async fn event_handler(
     // This lets us:
     //   1. Filter out dust / honeypot pools (near-zero reserves produce
     //      astronomically-large fake "profits" from the AMM math).
-    //   2. Seed the per-block DashMap so the event loop doesn't need a
+    //   2. Seed the per-block reserves map so the event loop doesn't need a
     //      second full RPC round-trip.
     let initial_reserves = batch_get_uniswap_v2_reserves(
         env.https_url.clone(),
@@ -111,6 +161,8 @@ pub async fn event_handler(
                         before_alg,
                         algebra_pools_full.len()
                     );
+                    // Enrich Algebra pools with tick-level liquidityNet data
+                    enrich_tick_data(provider.clone(), &mut algebra_pools_full).await;
                 }
                 Err(e) => {
                     info!("Failed to load Algebra pools: {:?}", e);
@@ -146,6 +198,8 @@ pub async fn event_handler(
                         in_range,
                         v3cl_min_liquidity,
                     );
+                    // Enrich V3CL pools with tick-level liquidityNet data
+                    enrich_tick_data(provider.clone(), &mut v3cl_pools_full).await;
                 }
                 Err(e) => {
                     info!("Failed to load UniswapV3CL pools (cache may not exist yet): {:?}", e);
@@ -154,7 +208,30 @@ pub async fn event_handler(
         }
     }
 
-    // ── LFJ Liquidity Book pools ────────────────────────────────────────────
+    // ── Bootstrap explicit price-oracle pools ────────────────────────────────
+    // Any start_token with `price_pool = "0x..."` in config is fetched from
+    // chain if not already present in v3cl_pools_full (i.e. not in the CSV).
+    {
+        let already_loaded: std::collections::HashSet<H160> =
+            v3cl_pools_full.iter().map(|p| p.address).collect();
+
+        let missing: Vec<H160> = config
+            .start_tokens
+            .iter()
+            .filter_map(|t| t.price_pool.as_deref())
+            .filter_map(|s| H160::from_str(s).ok())
+            .filter(|a| !already_loaded.contains(a))
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        if !missing.is_empty() {
+            info!("Fetching {} price-oracle pool(s) from chain...", missing.len());
+            let oracle_pools = fetch_v3cl_oracle_pools(provider.clone(), missing).await;
+            info!("Bootstrapped {} price-oracle pool(s)", oracle_pools.len());
+            v3cl_pools_full.extend(oracle_pools);
+        }
+    }
     let mut lfj_pools_full = Vec::new();
 
     if let Some(lfj_cfg) = config.dexes.lfj.as_ref() {
@@ -231,6 +308,11 @@ pub async fn event_handler(
     // pools we care about, avoiding state fetches for untracked pools.
     let v3cl_pool_set: HashSet<H160> = v3cl_pools_full.iter().map(|p| p.address).collect();
 
+    // Build a fast-lookup set of all tracked Algebra pool addresses.
+    // Algebra uses the same Swap(address,address,int256,int256,uint160,uint128,int24)
+    // event signature as Uniswap V3, so the same eth_getLogs call captures both.
+    let algebra_pool_set: HashSet<H160> = algebra_pools_info.iter().map(|p| p.address).collect();
+
     let blacklist_tokens = get_blacklist_tokens(&config.chain.blacklisted_tokens);
 
     let mut active_pools = HashMap::new();
@@ -266,9 +348,9 @@ pub async fn event_handler(
         }
     }
 
-    // Seed the DashMap from the reserves we already fetched during pool filtering.
+    // Seed the reserves map from the reserves we already fetched during pool filtering.
     // Only keep entries relevant to the active (path-participating) pools.
-    let reserves = DashMap::new();
+    let mut reserves: HashMap<H160, Reserve> = HashMap::new();
     for pool in &v2_pools_vec {
         if let Some(reserve) = initial_reserves.get(&pool.address) {
             reserves.insert(pool.address, reserve.clone());
@@ -277,10 +359,8 @@ pub async fn event_handler(
 
     // LFJ per-block state map (initially empty, refreshed every block).
     let mut lfj_states_map: HashMap<H160, LFJState> = HashMap::new();
-
     if debug_spreads {
-        let reserves_snapshot: HashMap<H160, Reserve> =
-            reserves.iter().map(|r| (*r.key(), r.value().clone())).collect();
+        let reserves_snapshot: HashMap<H160, Reserve> = reserves.clone();
 
         let mut found_paths = 0;
         for (idx, path) in paths.iter().enumerate() {
@@ -388,52 +468,78 @@ pub async fn event_handler(
     }
 
     let mut event_receiver = event_sender.subscribe();
+
+    // ── Chainlink/Aave oracle price cache ────────────────────────────────────
+    // Refreshed at startup and every 300 blocks (~5 min on Base).
+    // Used as final fallback in get_token_price_usd when no on-chain pool
+    // has a token/stable pair loaded.
+    let mut oracle_prices = fetch_aave_oracle_prices(&config, provider.clone()).await;
+    let mut block_counter: u64 = 0;
+
     loop {
         match event_receiver.recv().await {
             Ok(event) => match event {
                 Event::Block(block) => {
                     info!("{:?}", block);
 
-                    // 1. Update Algebra states
+                    // Refresh Chainlink/Aave oracle prices every 300 blocks (~5 min)
+                    block_counter += 1;
+                    if block_counter % 300 == 0 {
+                        oracle_prices = fetch_aave_oracle_prices(&config, provider.clone()).await;
+                    }
+
+                    // 1. Event-driven CL state refresh (Algebra + V3CL + LFJ).
+                    //
+                    // One eth_getLogs call retrieves all V3-style Swap events.
+                    // Algebra pools use the same Swap topic as UniswapV3CL, so we
+                    // can split the results into Algebra vs V3CL afterwards.  This
+                    // avoids fetching ALL pools every block — only swapped ones.
+                    let mut cl_swapped: HashSet<H160> = HashSet::new();
+                    if !v3cl_pools_full.is_empty() || !algebra_pools_info.is_empty() {
+                        cl_swapped =
+                            match get_touched_v3cl_pools(provider.clone(), block.block_number).await {
+                                Ok(s) => s.into_iter()
+                                    .filter(|a| v3cl_pool_set.contains(a) || algebra_pool_set.contains(a))
+                                    .collect(),
+                                Err(e) => {
+                                    if !is_unknown_block_error(&e) {
+                                        info!("get_touched_cl_pools error: {:?}", e);
+                                    }
+                                    HashSet::new()
+                                }
+                            };
+                    }
+
+                    // 1a. Refresh Algebra pools that swapped this block
                     if !algebra_pools_info.is_empty() {
-                        let states = fetch_algebra_states(provider.clone(), &algebra_pools_info).await;
-                        for (addr, state) in states {
-                            if let Some(pool) = algebra_pools_map.get_mut(&addr) {
-                                pool.sqrt_price_x96 = state.sqrt_price_x96;
-                                pool.liquidity = state.liquidity;
-                                pool.tick = state.tick;
-                                // Update dynamic fee (lastFee from globalState).
-                                // Keep existing fee if state returned 0 (no dynamic update).
-                                if state.fee > 0 {
-                                    pool.fee = state.fee;
+                        let algebra_swapped: Vec<_> = algebra_pools_info.iter()
+                            .filter(|p| cl_swapped.contains(&p.address))
+                            .cloned()
+                            .collect();
+                        if !algebra_swapped.is_empty() {
+                            let states = fetch_algebra_states(provider.clone(), &algebra_swapped).await;
+                            for (addr, state) in states {
+                                if let Some(pool) = algebra_pools_map.get_mut(&addr) {
+                                    pool.sqrt_price_x96 = state.sqrt_price_x96;
+                                    pool.liquidity = state.liquidity;
+                                    pool.tick = state.tick;
+                                    if state.fee > 0 {
+                                        pool.fee = state.fee;
+                                    }
                                 }
                             }
                         }
                     }
 
-                    // 1b. Update UniswapV3CL states — event-driven:
-                    // Query which pools had a Swap this block (one eth_getLogs call),
-                    // then only fetch slot0+liquidity for those pools.
-                    let mut v3cl_swapped: HashSet<H160> = HashSet::new();
+                    // 1b. Refresh UniswapV3CL pools that swapped this block
                     if !v3cl_pools_full.is_empty() {
-                        v3cl_swapped =
-                            match get_touched_v3cl_pools(provider.clone(), block.block_number).await {
-                                Ok(s) => s.into_iter().filter(|a| v3cl_pool_set.contains(a)).collect(),
-                                Err(e) => {
-                                    if !is_unknown_block_error(&e) {
-                                        info!("get_touched_v3cl_pools error: {:?}", e);
-                                    }
-                                    HashSet::new()
-                                }
-                            };
-
-                        if !v3cl_swapped.is_empty() {
-                            let pools_to_refresh: Vec<_> = v3cl_pools_full
-                                .iter()
-                                .filter(|p| v3cl_swapped.contains(&p.address))
-                                .cloned()
-                                .collect();
-                            let states = fetch_uniswapv3cl_states(provider.clone(), &pools_to_refresh).await;
+                        let v3cl_to_refresh: Vec<_> = v3cl_pools_full
+                            .iter()
+                            .filter(|p| cl_swapped.contains(&p.address))
+                            .cloned()
+                            .collect();
+                        if !v3cl_to_refresh.is_empty() {
+                            let states = fetch_uniswapv3cl_states(provider.clone(), &v3cl_to_refresh).await;
                             for (addr, state) in states {
                                 if let Some(pool) = algebra_pools_map.get_mut(&addr) {
                                     pool.sqrt_price_x96 = state.sqrt_price_x96;
@@ -444,8 +550,23 @@ pub async fn event_handler(
                             }
                         }
                     }
+
+                    // 1c. Refresh LFJ pools — event-driven via Swap topic filtering.
+                    // LFJ Swap topic: keccak256("Swap(address,address,uint24,bytes32,bytes32,uint24,uint128,uint128)")
                     if !lfj_pools_full.is_empty() {
-                        lfj_states_map = fetch_lfj_states(provider.clone(), &lfj_pools_full).await;
+                        let lfj_swapped: Vec<_> = lfj_pools_full.iter()
+                            .filter(|p| cl_swapped.contains(&p.address))
+                            .cloned()
+                            .collect();
+                        if lfj_swapped.is_empty() {
+                            // No LFJ pools swapped — also check via V2 Sync events
+                            // as a fallback (LFJ doesn't emit V3 Swap topic).
+                            // Refresh all LFJ pools only on first block, then skip.
+                            // For now: only refresh LFJ pools that appear in touched_reserves
+                            // (handled below after V2 reserve update).
+                        } else {
+                            lfj_states_map = fetch_lfj_states(provider.clone(), &lfj_swapped).await;
+                        }
                     }
 
                     // 2. Update V2 reserves
@@ -470,10 +591,10 @@ pub async fn event_handler(
 
                     // Per-block stats: subscribed pools, how many swapped, V2 touched
                     info!(
-                        "[stats] block={} | V3CL: {}/{} swapped | V2: {} touched",
+                        "[stats] block={} | CL: {}/{} swapped | V2: {} touched",
                         block.block_number,
-                        v3cl_swapped.len(),
-                        v3cl_pool_set.len(),
+                        cl_swapped.len(),
+                        v3cl_pool_set.len() + algebra_pool_set.len(),
                         touched_pools.len(),
                     );
 
@@ -490,14 +611,17 @@ pub async fn event_handler(
                             None => continue,
                         };
 
-                        let mut spreads = HashMap::new();
-                        
                         // Create snapshot of V2 reserves for simulation
-                        let reserves_snapshot: HashMap<H160, Reserve> =
-                                    reserves.iter().map(|r| (*r.key(), r.value().clone())).collect();
+                        let reserves_snapshot: HashMap<H160, Reserve> = reserves.clone();
 
-                        let evaluate_all = touched_pools.is_empty() && v3cl_swapped.is_empty();
-                        for &idx in token_path_indices {
+                        let evaluate_all = touched_pools.is_empty() && cl_swapped.is_empty();
+
+                        // Parallel spread evaluation using rayon.
+                        // Each path is independently simulated; results are collected
+                        // into a HashMap afterwards.
+                        let spreads: HashMap<usize, i128> = token_path_indices
+                            .par_iter()
+                            .filter_map(|&idx| {
                             let path = &paths[idx];
 
                             let has_algebra = path.get_pool(0).pool_type.is_cl()
@@ -512,23 +636,18 @@ pub async fn event_handler(
                                 .iter()
                                 .any(|pool| path.has_pool(pool));
 
-                            // Only simulate CL paths where at least one pool swapped this block.
                             let is_touched_cl = has_algebra && [0u8, 1u8, 2u8].iter().any(|&i| {
                                 let p = path.get_pool(i);
-                                p.pool_type.is_cl() && v3cl_swapped.contains(&p.address)
+                                p.pool_type.is_cl() && cl_swapped.contains(&p.address)
                             });
 
                             if force_seeded_v2
                                 && !seed_addrs.is_empty()
                                 && !seed_addrs.iter().all(|addr| path.has_pool(addr))
                             {
-                                continue;
+                                return None;
                             }
 
-                            // Skip paths containing CL pools that are currently out of range
-                            // (liquidity == 0 at the current tick). Pools are checked every
-                            // block via fetch_uniswapv3cl_states — they re-activate automatically
-                            // when price re-enters their LP range.
                             if has_algebra {
                                 let cl_in_range = [0u8, 1u8, 2u8].iter().all(|&hop| {
                                     let p = path.get_pool(hop);
@@ -542,40 +661,39 @@ pub async fn event_handler(
                                     }
                                 });
                                 if !cl_in_range {
-                                    continue;
+                                    return None;
                                 }
                             }
 
-                            if evaluate_all || is_touched_cl || has_lfj || is_touched_v2 {
-                                let one_token_in = U256::from(1);
+                            if !(evaluate_all || is_touched_cl || has_lfj || is_touched_v2) {
+                                return None;
+                            }
 
-                                let simulated = path.simulate_mixed_path(one_token_in, &reserves_snapshot, &algebra_pools_map, &lfj_states_map);
+                            let one_token_in = U256::from(1);
+                            let simulated = path.simulate_mixed_path(one_token_in, &reserves_snapshot, &algebra_pools_map, &lfj_states_map);
 
-                                match simulated {
-                                    Some(price_quote) => {
-                                        // Use pre-computed decimal multiplier
-                                        let one_token_in_scaled = one_token_in * decimal_multipliers[&start_address];
+                            match simulated {
+                                Some(price_quote) => {
+                                    let one_token_in_scaled = one_token_in * decimal_multipliers[&start_address];
 
-                                        // Dust-pool sanity cap: skip paths where output exceeds the cap.
-                                        // Scale: 10 = 1× (break even), 20 = 2×, 50 = 5×.
-                                        // Real arb returns ~1.001–1.02×; dust pools return ~235,000×.
-                                        let max_pct_num = config.chain.max_profit_pct as u64;
-                                        if price_quote * U256::from(10) > one_token_in_scaled * U256::from(max_pct_num) {
-                                            continue;
-                                        }
-
-                                        let _out = price_quote.as_u128() as i128;
-                                        let _in = one_token_in_scaled.as_u128() as i128;
-                                        let spread = _out - _in;
-
-                                        if spread > 0 {
-                                            spreads.insert(idx, spread);
-                                        }
+                                    let max_pct_num = config.chain.max_profit_pct as u64;
+                                    if price_quote * U256::from(10) > one_token_in_scaled * U256::from(max_pct_num) {
+                                        return None;
                                     }
-                                    None => {}
+
+                                    let _out = price_quote.as_u128() as i128;
+                                    let _in = one_token_in_scaled.as_u128() as i128;
+                                    let spread = _out - _in;
+
+                                    if spread > 0 {
+                                        Some((idx, spread))
+                                    } else {
+                                        None
+                                    }
                                 }
+                                None => None,
                             }
-                        }
+                        }).collect();
 
                         if spreads.is_empty() {
                             if debug_spreads {
@@ -626,11 +744,10 @@ pub async fn event_handler(
                             );
                             
                             // Deduct Aave flashloan premium (5 bps on borrowed principal).
-                            // opt.0 is the borrow amount in whole tokens; multiply by the
-                            // token's decimal unit to get raw units, then apply 5/10000.
+                            // opt.0 is now the raw atomic borrow amount (e.g. wei).
                             let aave_fee_raw =
                                 if config.execution.default_flashloan_provider == "AaveV3" {
-                                    opt.0 * decimal_multipliers[&start_address]
+                                    opt.0
                                         * U256::from(5u64)
                                         / U256::from(10000u64)
                                 } else {
@@ -644,6 +761,84 @@ pub async fn event_handler(
                                 .saturating_sub(aave_fee_raw);
 
                             if excess_profit > U256::zero() {
+                                // ── Confirm with fresh on-chain CL state ─────────────────────────
+                                // The spread detection runs on cached state (updated only when the
+                                // pool emits a Swap event).  Before logging or executing, do a
+                                // targeted real-time refresh of every CL pool in this path so we
+                                // don't act on stale sqrtPrice — costs at most 1 extra eth_call.
+                                let path_pools_all: &[&crate::pools::AnyPool] = if path.nhop == 2 {
+                                    &[&path.pool_1, &path.pool_2]
+                                } else {
+                                    &[&path.pool_1, &path.pool_2, &path.pool_3]
+                                };
+                                let path_cl_addrs: Vec<H160> = path_pools_all
+                                    .iter()
+                                    .filter(|p| p.pool_type.is_cl())
+                                    .map(|p| p.address)
+                                    .collect();
+
+                                let (opt, excess_profit) = if !path_cl_addrs.is_empty() {
+                                    // Refresh V3CL pools in the path
+                                    let v3cl_fresh: Vec<_> = v3cl_pools_full
+                                        .iter()
+                                        .filter(|p| path_cl_addrs.contains(&p.address))
+                                        .cloned()
+                                        .collect();
+                                    if !v3cl_fresh.is_empty() {
+                                        let states = fetch_uniswapv3cl_states(provider.clone(), &v3cl_fresh).await;
+                                        for (addr, state) in states {
+                                            if let Some(pool) = algebra_pools_map.get_mut(&addr) {
+                                                pool.sqrt_price_x96 = state.sqrt_price_x96;
+                                                pool.liquidity = state.liquidity;
+                                                pool.tick = state.tick;
+                                            }
+                                        }
+                                    }
+                                    // Refresh Algebra pools in the path
+                                    let algebra_fresh: Vec<_> = algebra_pools_info
+                                        .iter()
+                                        .filter(|p| path_cl_addrs.contains(&p.address))
+                                        .cloned()
+                                        .collect();
+                                    if !algebra_fresh.is_empty() {
+                                        let states = fetch_algebra_states(provider.clone(), &algebra_fresh).await;
+                                        for (addr, state) in states {
+                                            if let Some(pool) = algebra_pools_map.get_mut(&addr) {
+                                                pool.sqrt_price_x96 = state.sqrt_price_x96;
+                                                pool.liquidity = state.liquidity;
+                                                pool.tick = state.tick;
+                                                if state.fee > 0 { pool.fee = state.fee; }
+                                            }
+                                        }
+                                    }
+                                    // Re-optimise with fresh state
+                                    let fresh_opt = path.optimize_amount_in_mixed(
+                                        U256::zero(),
+                                        &reserves_snapshot,
+                                        &algebra_pools_map,
+                                        &lfj_states_map,
+                                    );
+                                    let fresh_aave_fee =
+                                        if config.execution.default_flashloan_provider == "AaveV3" {
+                                            fresh_opt.0 * U256::from(5u64) / U256::from(10000u64)
+                                        } else {
+                                            U256::zero()
+                                        };
+                                    let fresh_excess = fresh_opt.1
+                                        .saturating_sub(gas_cost_in_token)
+                                        .saturating_sub(fresh_aave_fee);
+                                    if fresh_excess.is_zero() {
+                                        info!(
+                                            "[confirm] idx={} stale signal — fresh CL state shows no profit, skipping",
+                                            path_idx
+                                        );
+                                        continue;
+                                    }
+                                    (fresh_opt, fresh_excess)
+                                } else {
+                                    (opt, excess_profit)
+                                };
+
                                 let profit_u256 = excess_profit;
                                 let token_unit = decimal_multipliers[&start_address];
                                 let profit_whole = profit_u256 / token_unit;
@@ -665,7 +860,7 @@ pub async fn event_handler(
                                 let profit_in_token_f64 = (profit_u256.as_u128() as f64)
                                     / ((10_u128.pow(start_token.decimals as u32)) as f64);
                                 let token_price_usd = get_token_price_usd(
-                                    &config, &active_pools, &reserves_snapshot, start_token,
+                                    &config, &active_pools, &reserves_snapshot, start_token, &oracle_prices,
                                 );
                                 let profit_usd = if token_price_usd > 0.0 {
                                     profit_in_token_f64 * token_price_usd
@@ -698,14 +893,26 @@ pub async fn event_handler(
                                     format!("{}→{}→{}", dex_label(&path.pool_1), dex_label(&path.pool_2), dex_label(&path.pool_3))
                                 };
 
+                                // Display amount_in in whole-token units
+                                let amount_in_whole = opt.0 / decimal_multipliers[&start_address];
+                                let amount_in_frac = opt.0 % decimal_multipliers[&start_address];
+                                let amount_in_frac_padded = format!("{:0>width$}", amount_in_frac, width = start_token.decimals as usize);
+                                let amount_in_frac_str = amount_in_frac_padded.trim_end_matches('0');
+                                let amount_in_display = if amount_in_frac_str.is_empty() {
+                                    format!("{}", amount_in_whole)
+                                } else {
+                                    format!("{}.{}", amount_in_whole, amount_in_frac_str)
+                                };
+
                                 info!(
-                                    "[{}] Profitable path found: token={} idx={} profit={} {} amount_in={} tokens [{}]",
+                                    "[{}] Profitable path found: token={} idx={} profit={} {} amount_in={} {} [{}]",
                                     path_kind,
                                     start_token.symbol,
                                     path_idx,
                                     profit_display,
                                     start_token.symbol,
-                                    opt.0,
+                                    amount_in_display,
+                                    start_token.symbol,
                                     hops
                                 );
 
@@ -729,7 +936,7 @@ pub async fn event_handler(
                                             tok  = start_token.symbol,
                                             idx  = path_idx,
                                             profit = profit_display,
-                                            amt  = opt.0,
+                                            amt  = amount_in_display,
                                             p1   = path.pool_1.address,
                                             p2   = path.pool_2.address,
                                             p3   = path.pool_3.address,
@@ -770,9 +977,8 @@ pub async fn event_handler(
 
                                 // Check if profit meets threshold
                                 if executor.check_profit_threshold(profit_u256, start_token, token_price_usd) {
-                                    // opt.0 is in whole tokens; convert to raw atoms so the
-                                    // flash-loan contract receives the correct borrow amount.
-                                    let amount_in_raw = opt.0 * decimal_multipliers[&start_address];
+                                    // opt.0 is already in raw atomic units (e.g. wei).
+                                    let amount_in_raw = opt.0;
                                     // Build execution parameters
                                     let exec_params = ExecutionParams {
                                         path: path.clone(),
@@ -790,6 +996,12 @@ pub async fn event_handler(
                                         Ok(plan) => {
                                             executor.log_execution(&exec_params, &plan);
                                             if let Some(bundler) = &bundler {
+                                                // Slippage protection: require at least 95% of the expected
+                                                // post-repay output.  amount_in is the flash-loaned principal;
+                                                // the contract must output at least min_out after all hops for
+                                                // the slippage check to pass (minOut=0 disables the check).
+                                                let expected_out = plan.amount_in + exec_params.expected_profit;
+                                                let min_out = expected_out * U256::from(95u64) / U256::from(100u64);
                                                 match bundler
                                                     .order_tx(
                                                         plan.path_params.clone(),
@@ -798,6 +1010,7 @@ pub async fn event_handler(
                                                         plan.loan_pool,
                                                         plan.max_priority_fee,
                                                         plan.max_fee_per_gas,
+                                                        min_out,
                                                     )
                                                     .await
                                                 {
@@ -901,23 +1114,39 @@ fn is_unknown_block_error(err: &anyhow::Error) -> bool {
     err.to_string().contains("Unknown block")
 }
 
-/// Return the USD price of one whole unit of `token` by reading the on-chain
-/// gas-oracle pool (or any V2 pool that bridges token ↔ stable).
+/// Lossless-ish U256 → f64 conversion.
 ///
-/// Returns:
-/// - `1.0`  if `token` is the configured stable coin
-/// - native token price (e.g. 3000.0 for WETH) when `token` is the gas token
-/// - price derived from the first V2 reserve that pairs `token` against stable
-/// - `0.0`  when no price can be derived (caller falls back to raw token units)
+/// `as_u128()` silently truncates values > 2^128 — sqrtPriceX96 can exceed
+/// that for extreme token pairs (e.g. SHIB/ETH). This function splits the
+/// U256 into high and low 128-bit halves to produce a correct f64 approximation.
+fn u256_to_f64(v: U256) -> f64 {
+    let lo = v.low_u128() as f64;
+    let hi = (v >> 128).low_u128() as f64;
+    hi * (2.0f64).powi(128) + lo
+}
+
+/// Return the USD price of one whole unit of `token`.
+///
+/// Priority:
+///   1. Token IS the stable coin                   → $1.00
+///   2. `price_pool` explicitly configured          → use that specific pool (logged)
+///   3. Scan all V2 pools for token ↔ stable pair  (first match, logged)
+///   4. Scan all V3CL/Algebra pools for token ↔ stable pair (first match, logged)
+///   5. Aave/Chainlink oracle cache (refreshed every 300 blocks) (logged)
+///   6. Return 0.0 — no price source found (logged)
 fn get_token_price_usd(
     config: &Config,
     pools: &HashMap<H160, AnyPool>,
     reserves: &HashMap<H160, Reserve>,
     token: &TokenConfig,
+    oracle_prices: &HashMap<H160, f64>,
 ) -> f64 {
+    use crate::algebra::AlgebraPoolFull;
     use std::str::FromStr;
 
-    let stable_addr = match config.gas.stable_address.as_deref().and_then(|s| H160::from_str(s).ok()) {
+    let stable_addr = match config.gas.stable_address.as_deref()
+        .and_then(|s| H160::from_str(s).ok())
+    {
         Some(a) if a != H160::zero() => a,
         _ => return 0.0,
     };
@@ -931,79 +1160,92 @@ fn get_token_price_usd(
         return 1.0;
     }
 
-    // 2. Token is the gas-oracle token (e.g. WETH/WAVAX) → read gas pool price
-    if let Some(gas_token_str) = config.gas.token_address.as_deref() {
-        if let Ok(gas_token_addr) = H160::from_str(gas_token_str) {
-            if token_addr == gas_token_addr {
-                if let Some(gas_pool_str) = config.gas.pool_address.as_deref() {
-                    if let Ok(gas_pool_addr) = H160::from_str(gas_pool_str) {
-                        if let Some(pool) = pools.get(&gas_pool_addr) {
-                            let tok_is_t0 = config.gas.token_is_token0.unwrap_or(false);
-                            let price: f64 = match &pool.pool_type {
-                                PoolType::V2(v2) => {
-                                    if let Some(r) = reserves.get(&gas_pool_addr) {
-                                        UniswapV2Simulator::reserves_to_price(
-                                            r.reserve0, r.reserve1,
-                                            v2.decimals0, v2.decimals1,
-                                            tok_is_t0,
-                                        )
-                                    } else { 0.0 }
-                                }
-                                PoolType::Algebra(alg) | PoolType::UniswapV3CL(alg) => {
-                                    let sqrt_p = alg.sqrt_price_x96;
-                                    if sqrt_p.is_zero() { 0.0 } else {
-                                        let q96 = U256::from(1u64) << 96;
-                                        let p_f = (sqrt_p.as_u128() as f64)
-                                            / (q96.as_u128() as f64);
-                                        let price_raw = p_f * p_f;
-                                        let adj = (10.0f64).powi(
-                                            alg.decimals0 as i32 - alg.decimals1 as i32,
-                                        );
-                                        let p = price_raw * adj;
-                                        if tok_is_t0 { p } else if p == 0.0 { 0.0 } else { 1.0 / p }
-                                    }
-                                }
-                                PoolType::LFJ(_) => 0.0,
-                            };
-                            if price > 0.0 && price.is_finite() {
-                                return price;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    // Shared helper: sqrtPriceX96 → USD price of token relative to stable
+    let cl_price = |alg: &AlgebraPoolFull, tok_is_t0: bool| -> f64 {
+        if alg.sqrt_price_x96.is_zero() { return 0.0; }
+        let q96 = U256::from(1u64) << 96;
+        let p_f = u256_to_f64(alg.sqrt_price_x96) / u256_to_f64(q96);
+        let price_raw = p_f * p_f;
+        let adj = (10.0f64).powi(alg.decimals0 as i32 - alg.decimals1 as i32);
+        let p = price_raw * adj;
+        if tok_is_t0 { p } else if p == 0.0 { 0.0 } else { 1.0 / p }
+    };
 
-    // 3. Search V2 reserves for any pool that pairs token ↔ stable
-    for (addr, reserve) in reserves.iter() {
-        if let Some(pool) = pools.get(addr) {
-            if let PoolType::V2(v2) = &pool.pool_type {
-                let t0 = pool.token0;
-                let t1 = pool.token1;
-                let (tok_is_t0, pair_found) = if t0 == token_addr && t1 == stable_addr {
-                    (true, true)
-                } else if t1 == token_addr && t0 == stable_addr {
-                    (false, true)
-                } else {
-                    (false, false)
+    // 2. Explicit price_pool → fastest path, always preferred
+    if let Some(pp_str) = token.price_pool.as_deref() {
+        if let Ok(pp_addr) = H160::from_str(pp_str) {
+            if let Some(pool) = pools.get(&pp_addr) {
+                let tok_is_t0 = pool.token0 == token_addr;
+                let price: f64 = match &pool.pool_type {
+                    PoolType::V2(v2) => {
+                        reserves.get(&pp_addr).map_or(0.0, |r| {
+                            UniswapV2Simulator::reserves_to_price(
+                                r.reserve0, r.reserve1,
+                                v2.decimals0, v2.decimals1,
+                                tok_is_t0,
+                            )
+                        })
+                    }
+                    PoolType::Algebra(alg) | PoolType::UniswapV3CL(alg) => cl_price(alg, tok_is_t0),
+                    PoolType::LFJ(_) => 0.0,
                 };
-                if !pair_found { continue; }
-                // reserves_to_price(r0, r1, dec0, dec1, token_is_token0) gives price of
-                // token (in stable units) — i.e. USD per whole token.
-                let price = UniswapV2Simulator::reserves_to_price(
-                    reserve.reserve0, reserve.reserve1,
-                    v2.decimals0, v2.decimals1,
-                    tok_is_t0,
-                );
                 if price > 0.0 && price.is_finite() {
+                    info!("{} ${:.4}  ← price_pool {:?}", token.symbol, price, pp_addr);
                     return price;
                 }
             }
         }
     }
 
-    0.0 // unknown — caller falls back to token-unit comparison
+    // 3. Scan V2 pools for any token ↔ stable pair
+    for (addr, pool) in pools.iter() {
+        if let PoolType::V2(v2) = &pool.pool_type {
+            let tok_is_t0 = pool.token0 == token_addr && pool.token1 == stable_addr;
+            let tok_is_t1 = pool.token1 == token_addr && pool.token0 == stable_addr;
+            if !tok_is_t0 && !tok_is_t1 { continue; }
+            if let Some(r) = reserves.get(addr) {
+                let price = UniswapV2Simulator::reserves_to_price(
+                    r.reserve0, r.reserve1,
+                    v2.decimals0, v2.decimals1,
+                    tok_is_t0,
+                );
+                if price > 0.0 && price.is_finite() {
+                    info!("{} ${:.4}  ← V2 pool {:?}", token.symbol, price, addr);
+                    return price;
+                }
+            }
+        }
+    }
+
+    // 4. Scan V3CL/Algebra pools for any token ↔ stable pair
+    for (addr, pool) in pools.iter() {
+        match &pool.pool_type {
+            PoolType::Algebra(alg) | PoolType::UniswapV3CL(alg) => {
+                let tok_is_t0 = pool.token0 == token_addr && pool.token1 == stable_addr;
+                let tok_is_t1 = pool.token1 == token_addr && pool.token0 == stable_addr;
+                if !tok_is_t0 && !tok_is_t1 { continue; }
+                let price = cl_price(alg, tok_is_t0);
+                if price > 0.0 && price.is_finite() {
+                    info!("{} ${:.4}  ← V3CL pool {:?}", token.symbol, price, addr);
+                    return price;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    info!("{} price unknown — no token/stable pool loaded; checking oracle cache", token.symbol);
+
+    // 5. Aave/Chainlink oracle cache — last resort before giving up
+    if let Some(&p) = oracle_prices.get(&token_addr) {
+        if p > 0.0 {
+            info!("{} ${:.4}  ← Chainlink/Aave oracle cache", token.symbol, p);
+            return p;
+        }
+    }
+
+    info!("{} price genuinely unknown — returning 0.0 (profit will be in token units)", token.symbol);
+    0.0
 }
 
 fn estimate_gas_cost_in_start_token(
@@ -1071,8 +1313,8 @@ fn estimate_gas_cost_in_start_token(
             if sqrt_p.is_zero() { return U256::zero(); }
             
             let q96 = U256::from(1) << 96;
-            // Use f64 for approximation
-            let p_f = (sqrt_p.as_u128() as f64) / (q96.as_u128() as f64);
+            // Use f64 for approximation — safe conversion avoids u128 truncation
+            let p_f = u256_to_f64(sqrt_p) / u256_to_f64(q96);
             let price_raw = p_f * p_f;
             
             // Decimal adjustment

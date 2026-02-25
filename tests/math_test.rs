@@ -1,6 +1,7 @@
 use rust::concentrated_liquidity::calculate_sqrt_price_from_tick;
 use ethers::types::U256;
 use rust::concentrated_liquidity::calculate_amount_out;
+use std::collections::HashMap;
 
 #[test]
 fn test_tick_math_at_zero() {
@@ -32,9 +33,10 @@ fn test_cl_amount_out_non_zero() {
     let liquidity = U256::from(1_000_000_000_000u64);
     let fee_pips = 3000u32;
 
-    let out_0_to_1 = calculate_amount_out(amount_in, sqrt_price_x96, liquidity, fee_pips, true, 0, 0)
+    let empty_td = HashMap::new();
+    let out_0_to_1 = calculate_amount_out(amount_in, sqrt_price_x96, liquidity, fee_pips, true, 0, 0, &empty_td)
         .expect("amount out should compute");
-    let out_1_to_0 = calculate_amount_out(amount_in, sqrt_price_x96, liquidity, fee_pips, false, 0, 0)
+    let out_1_to_0 = calculate_amount_out(amount_in, sqrt_price_x96, liquidity, fee_pips, false, 0, 0, &empty_td)
         .expect("amount out should compute");
 
     assert!(out_0_to_1 > U256::zero());

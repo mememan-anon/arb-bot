@@ -1,14 +1,10 @@
 [chain]
 name = "base"
 chain_id = 8453
-https_url = "https://base.blockpi.network/v1/rpc/686596c8e8e6a17b049912098b920c5a1e2a7f04"
-wss_url = "wss://lb.drpc.live/base/Avibgvi26EjPsw76UtdwmsRbjBXa_TYR8LCNehXRfUMv"
-wss_urls = [
-  "wss://base-rpc.publicnode.com",
-  "wss://base.drpc.org",
-  "wss://lb.drpc.live/base/AuasEqOoxkk5qugXvfDlpIQRaeWIDh0R8bjy-uF7NYYO"
-  "https://base-mainnet.g.alchemy.com/v2/4aBLuZOavL1N3YUWe8c9ylHandj-Ez4f"
-]
+# RPC URLs — set WSS_URL and HTTPS_URL in .env to override (keep API keys out of this file)
+https_url = ""
+wss_url   = ""
+wss_urls  = []
 
 cache_dir = "base"
 # Output cap: real arb is ~1.001-1.02x; dust fakes are enormous.
@@ -21,6 +17,7 @@ blacklisted_tokens = []
 symbol = "WETH"
 address = "0x4200000000000000000000000000000000000006"
 decimals = 18
+price_pool = "0x6c561B446416E1A00E8E93E221854d6eA4171372"  # Uniswap V3 WETH/USDC on Base
 
 [[start_tokens]]
 symbol = "USDC"
@@ -31,12 +28,18 @@ decimals = 6
 symbol = "cbBTC"
 address = "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf"
 decimals = 8
+price_pool = "0xfBB6Eed8e7aa03B138556eeDaF5D271A5E1e43ef"  # Uniswap V3 USDC/cbBTC on Base
 
 # ── DEXes ────────────────────────────────────────────────────────────────────
 
-# Uniswap V2 on Base
-# Pool data pulled via: python scripts/pull_base_uniswap.py --v2
+# Uniswap V2 on Base + Aerodrome (volatile + stable pools)
+# Pool data pulled via:
+#   python scripts/pull_base_uniswap.py --v2           (Uniswap V2 pairs)
+#   python scripts/pull_aerodrome.py --amm             (Aerodrome V1 volatile + stable)
 # Cached to: cache/base/.cached-pools.csv
+# CSV version codes: 2=UniV2, 4=SolidlyStable, 5=SolidlyVolatile
+# Aerodrome volatile pools use version=5, fee=30 (0.30%)
+# Aerodrome stable pools use version=4, fee=5 (0.05%)
 [dexes.v2]
 enabled = true
 factories = ["0x8909Dc15e40173Ff4699343b6eb8132c65e18eC6"]  # Uniswap V2 Factory (Base)
@@ -58,7 +61,10 @@ routers = []
 quoter = ""
 
 # Uniswap V3 concentrated liquidity on Base (slot0 ABI)
-# Pool data pulled via: python scripts/pull_base_uniswap.py --v3
+# + Aerodrome Slipstream CL pools (same slot0/uniswapV3SwapCallback ABI)
+# Pool data pulled via:
+#   python scripts/pull_base_uniswap.py --v3           (Uniswap V3)
+#   python scripts/pull_aerodrome.py --cl              (Aerodrome Slipstream)
 # Cached to: cache/base/.cached-v3cl-pools.csv
 [dexes.uniswapv3cl]
 enabled = true
@@ -114,11 +120,10 @@ allowed_assets = [
   ]
 
 # ── Execution ─────────────────────────────────────────────────────────────────
-# Set enabled = false once you deploy V2ArbBot to Base and update 'contract_address'.
+# contract_address is read from BOT_ADDRESS in .env (keep secrets out of this file)
 [execution]
-enabled = false                  # Bot contract NOT yet deployed on Base
-contract_address = ""            # TODO: deploy V2ArbBot.sol on Base and fill in
-min_profit_threshold = 0.0       # Minimum net profit in USD (0.0 = log everything; raise after testing)
+enabled = true
+min_profit_threshold = 0.5      # Minimum net profit in USD (0.0 = log everything; raise after testing)
 max_position_size = 100000000.0
 use_flashloan = true
 default_flashloan_provider = "AaveV3"

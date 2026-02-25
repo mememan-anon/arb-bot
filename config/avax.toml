@@ -1,12 +1,10 @@
 [chain]
 name = "avalanche"
 chain_id = 43114
-https_url = "https://lb.drpc.live/avalanche/Avvg72d-xUi5gjIvpNPPTpHLAWWhESYR8bz1-uF7NYYO"
-wss_url = "wss://lb.drpc.live/avalanche/Avvg72d-xUi5gjIvpNPPTpHLAWWhESYR8bz1-uF7NYYO"
-wss_urls = [
-  "wss://avalanche-c-chain-rpc.publicnode.com",
-  "wss://avalanche.drpc.org"
-]
+# RPC URLs — set WSS_URL and HTTPS_URL in .env to override (keep API keys out of this file)
+https_url = ""
+wss_url   = ""
+wss_urls  = []
 cache_dir = "avax"
 # Output cap: 10=1x, 20=2x, 50=5x. Real arb is ~1.001-1.02x; dust fakes are ~235,000x.
 max_profit_pct = 80.0

@@ -23,8 +23,6 @@ abigen!(
     r#"[function decimals() view returns (uint8)]"#
 );
 
-// ... (existing structs)
-
 pub async fn fetch_full_algebra_pools(
     provider: Arc<Provider<Ws>>,
     pools_info: &[AlgebraPoolInfo],
@@ -92,11 +90,12 @@ pub async fn fetch_full_algebra_pools(
                 token1,
                 decimals0,
                 decimals1,
-                fee: fee,
+                fee,
                 sqrt_price_x96: sqrt_price,
                 liquidity,
                 tick,
                 tick_spacing,
+                tick_data: HashMap::new(),
             })
         });
     }
@@ -138,10 +137,17 @@ pub struct AlgebraPoolFull {
     pub fee: u32,
     pub sqrt_price_x96: U256,
     pub liquidity: U256,
-    pub tick: i32,    /// Tick spacing for this pool. Used in off-chain CL simulation to detect
+    pub tick: i32,
+    /// Tick spacing for this pool. Used in off-chain CL simulation to detect
     /// swaps that would cross a tick boundary (which the single-tick
     /// approximation cannot model accurately).
-    pub tick_spacing: i32,}
+    pub tick_spacing: i32,
+    /// Per-tick liquidityNet (or liquidityDelta) keyed by initialized tick
+    /// index.  When the swap crosses a tick boundary, the simulation adjusts
+    /// the running liquidity by this signed delta instead of assuming it stays
+    /// constant.  Populated at startup via `enrich_tick_data()`.
+    pub tick_data: HashMap<i32, i128>,
+}
 
 pub fn load_algebra_pools_from_v3_csv(cache_dir: &str) -> Result<Vec<AlgebraPoolInfo>> {
     let path = format!("cache/{cache_dir}/.cached-algebra-pools.csv");

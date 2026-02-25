@@ -7,7 +7,6 @@ use ethers::{
 };
 use fern::colors::{Color, ColoredLevelConfig};
 use log::LevelFilter;
-use rand::Rng;
 use std::{collections::{HashMap, HashSet}, str::FromStr, sync::Arc};
 
 use crate::multi::Reserve;
@@ -77,8 +76,7 @@ pub fn calculate_next_block_base_fee(
         }
     };
 
-    let seed = rand::thread_rng().gen_range(0..9);
-    new_base_fee + seed
+    new_base_fee
 }
 
 pub async fn get_touched_pool_reserves(

@@ -1,4 +1,6 @@
 .env
+.env.*
+contracts/.env.*
 target/
 src/.cached-pools.csv
 .env.local
@@ -12,3 +14,5 @@ contracts/out
 contracts/broadcast
 contracts/cache
 cache/avax/opportunities.log
+scripts/memepool.js
+.claude

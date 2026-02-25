@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node --version)",
+      "Bash(node -e \"const {WebSocket}=require\\(''ws''\\); console.log\\(''ws ok''\\)\")",
+      "Bash(node -e \"import\\(''ws''\\).then\\(m=>console.log\\(''ws esm ok''\\)\\).catch\\(\\(\\)=>console.log\\(''no ws esm''\\)\\)\")",
+      "Bash(node --experimental-websocket test_endpoints.mjs)",
+      "Bash(node -e \":*)",
+      "Bash(node --experimental-websocket test_apikeys.mjs)",
+      "Bash(node --input-type=module -e \":*)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''scripts/pull_aerodrome_sugar.py''\\).read\\(\\)\\); print\\(''syntax ok''\\)\")"
+    ]
+  }
+}

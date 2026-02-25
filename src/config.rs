@@ -41,6 +41,11 @@ pub struct TokenConfig {
     pub symbol: String,
     pub address: String,
     pub decimals: u8,
+    /// Optional explicit V3CL pool used as a live USD price oracle.
+    /// Fetched from chain at startup if not already in the CSV cache.
+    /// e.g. WETH: "0x6c561B446416E1A00E8E93E221854d6eA4171372" (WETH/USDC Uni V3)
+    ///      cbBTC: "0xfBB6Eed8e7aa03B138556eeDaF5D271A5E1e43ef" (USDC/cbBTC Uni V3)
+    pub price_pool: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -223,11 +228,20 @@ fn default_max_profit_pct() -> f64 { 50.0 }
 
 impl Config {
     pub fn load() -> Result<Self> {
+        // Load .env first so env vars are available for overrides below.
+        dotenv::dotenv().ok();
+
         let config_path = resolve_config_path()?;
         let raw = fs::read_to_string(&config_path)
             .map_err(|e| anyhow!("failed to read config {}: {e}", config_path.display()))?;
-        let cfg: Config =
+        let mut cfg: Config =
             toml::from_str(&raw).map_err(|e| anyhow!("failed to parse config: {e}"))?;
+
+        // Env var overrides for secrets — never put API keys in TOML files.
+        // WSS_URL / HTTPS_URL override the chain RPC endpoints for the active chain.
+        if let Ok(v) = env::var("WSS_URL")  { cfg.chain.wss_url   = v; }
+        if let Ok(v) = env::var("HTTPS_URL") { cfg.chain.https_url = v; }
+
         Ok(cfg)
     }
 }

@@ -275,14 +275,27 @@ impl Bundler {
         loan_from: Address,
         max_priority_fee_per_gas: U256,
         max_fee_per_gas: U256,
+        min_out: U256,
     ) -> Result<Eip1559TransactionRequest> {
         let nhop = paths.len();
+
+        // Dynamic gas limit based on hop count and pool types.
+        // Base cost covers flash-loan setup, calldata, SLOAD/SSTORE overhead.
+        // CL (types 1, 4) and LFJ (type 2) use iterative math on-chain → more gas.
+        let base_gas: u64 = 350_000;
+        let per_hop_gas: u64 = paths.iter().map(|p| match p.pool_type {
+            1 | 4 => 300_000,   // Algebra / UniswapV3CL (tick crossing)
+            2     => 280_000,   // LFJ Liquidity Book (bin traversal)
+            _     => 180_000,   // V2, Solidly Stable
+        }).sum();
+        let gas_limit = base_gas + per_hop_gas;
 
         let mut params = Vec::new();
         params.extend(vec![
             abi::Token::Uint(amount_in),
             abi::Token::Uint(U256::from(flashloan as u64)),
             abi::Token::Address(loan_from),
+            abi::Token::Uint(min_out),
         ]);
 
         for i in 0..nhop {
@@ -302,7 +315,7 @@ impl Bundler {
             chain_id: Some(common.2),
             max_priority_fee_per_gas: Some(max_priority_fee_per_gas),
             max_fee_per_gas: Some(max_fee_per_gas),
-            gas: Some(U256::from(1_200_000)),
+            gas: Some(U256::from(gas_limit)),
             nonce: Some(common.1),
             access_list: AccessList::default(),
         })
@@ -371,6 +384,7 @@ mod bundler_tests {
                 Address::from_str(aave_pool).unwrap(),
                 U256::from(100) * *GWEI,
                 U256::from(300) * *GWEI,
+                U256::zero(), // min_out (0 = no slippage check for test)
             )
             .await
             .unwrap();
