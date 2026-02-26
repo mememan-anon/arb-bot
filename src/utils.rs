@@ -11,6 +11,20 @@ use std::{collections::{HashMap, HashSet}, str::FromStr, sync::Arc};
 
 use crate::multi::Reserve;
 
+fn colorize_metrics(input: &str) -> String {
+    input
+        .split_whitespace()
+        .map(|token| {
+            if token.starts_with("block=") {
+                format!("\x1b[96m{}\x1b[0m", token)
+            } else {
+                token.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub fn setup_logger() -> Result<()> {
     let colors = ColoredLevelConfig {
         trace: Color::Cyan,
@@ -35,11 +49,13 @@ pub fn setup_logger() -> Result<()> {
 
     fern::Dispatch::new()
         .format(move |out, message, record| {
+            let ts = chrono::Local::now().format("%H:%M:%S%.3f");
+            let msg = colorize_metrics(&message.to_string());
             out.finish(format_args!(
-                "{}[{}] {}",
-                chrono::Local::now().format("[%H:%M:%S]"),
+                "\x1b[94m[{}]\x1b[0m[{}] {}",
+                ts,
                 colors.color(record.level()),
-                message
+                msg
             ))
         })
         .chain(std::io::stdout())

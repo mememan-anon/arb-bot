@@ -32,10 +32,22 @@ pub struct Env {
     pub signing_key: Option<String>,
     /// None when BOT_ADDRESS is unset or empty — bot runs in scan-only mode.
     pub bot_address: Option<String>,
+    /// Optional private sequencer / builder RPC URL.
+    /// When set, all arb transactions are broadcast ONLY to this endpoint,
+    /// hiding them from the public mempool and preventing front-running.
+    ///
+    /// Recommended for Base: "https://rpc.titanbuilder.xyz/"
+    /// (Titan is the dominant block builder on Base; 0% extra fee, standard RPC).
+    /// Also works with Flashbots Protect: "https://rpc.flashbots.net/fast"
+    ///
+    /// Set via env var: PRIVATE_RPC_URL=https://rpc.titanbuilder.xyz/
+    pub private_rpc_url: Option<String>,
 }
 
 impl Env {
     pub fn from_config(cfg: &Config) -> Self {
+        // PRIVATE_RPC_URL is sourced directly from the environment (.env).
+        let private_rpc_url = get_env_opt("PRIVATE_RPC_URL");
         Env {
             https_url: cfg.chain.https_url.clone(),
             wss_url: cfg.chain.wss_url.clone(),
@@ -43,6 +55,7 @@ impl Env {
             private_key: get_env_opt("PRIVATE_KEY"),
             signing_key: get_env_opt("SIGNING_KEY"),
             bot_address: get_env_opt("BOT_ADDRESS"),
+            private_rpc_url,
         }
     }
 }

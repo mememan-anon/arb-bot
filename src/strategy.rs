@@ -320,11 +320,17 @@ pub async fn event_handler(
     let mut _tick_enrich_zero_streak: HashMap<H160, u8> = HashMap::new();
     let tick_enrich_backoff_until: HashMap<H160, u64> = HashMap::new();
 
-    // Path-level cooldown for repeated simulation slippage failures.
-    // This suppresses paths that repeatedly pass detection but revert with
-    // `slippage` during eth_call simulation (common with fast-moving V2 paths).
-    const SLIPPAGE_FAIL_THRESHOLD: u8 = 2;
-    const SLIPPAGE_COOLDOWN_BLOCKS: u64 = 3;
+    // Path-level cooldown for simulation slippage failures.
+    // Any path that fails eth_call with "slippage" is suppressed for
+    // SLIPPAGE_COOLDOWN_BLOCKS blocks before being retried.  This prevents
+    // burning repeated gas on phantom arbs that arise from stale CL-pool state
+    // or thin margins on highly-active token pairs (e.g. VIRTUAL/WETH).
+    //
+    // THRESHOLD = 1 → ban immediately on first failure (no second chance).
+    // COOLDOWN  = 500 blocks ≈ 17 min on Base (2 s / block).  Long enough
+    //             for the underlying price discrepancy to genuinely resolve.
+    const SLIPPAGE_FAIL_THRESHOLD: u8 = 1;
+    const SLIPPAGE_COOLDOWN_BLOCKS: u64 = 500;
     let mut slippage_fail_count: HashMap<usize, u8> = HashMap::new();
     let mut slippage_cooldown_until: HashMap<usize, u64> = HashMap::new();
     // Path-level stale-signal backoff: paths that confirm as stale N times in a row
@@ -1122,7 +1128,29 @@ pub async fn event_handler(
                                                                             slippage_cooldown_until.remove(&path_idx);
                                                                             executed_successfully = true;
                                                                         }
-                                                                        Err(e) => info!("❌ Failed to send tx: {:?}", e),
+                                                                        Err(e) => {
+                                                                            let err_str = format!("{:?}", e);
+                                                                            if err_str.to_lowercase().contains("reverted") {
+                                                                                // On-chain revert despite passing eth_call.
+                                                                                // Most common cause: front-run within the same block.
+                                                                                // Apply the same slippage-cooldown so we don't keep
+                                                                                // submitting the identical path until conditions change.
+                                                                                info!("❌ On-chain revert idx={}: {:?}", path_idx, e);
+                                                                                let fail_count = slippage_fail_count.entry(path_idx).or_insert(0);
+                                                                                *fail_count = fail_count.saturating_add(1);
+                                                                                if *fail_count >= SLIPPAGE_FAIL_THRESHOLD {
+                                                                                    let until_block = current_block.saturating_add(SLIPPAGE_COOLDOWN_BLOCKS);
+                                                                                    slippage_cooldown_until.insert(path_idx, until_block);
+                                                                                    info!(
+                                                                                        "[cooldown] idx={} on-chain revert {}x; skipping until block {}",
+                                                                                        path_idx, *fail_count, until_block
+                                                                                    );
+                                                                                    slippage_fail_count.insert(path_idx, 0);
+                                                                                }
+                                                                            } else {
+                                                                                info!("❌ Failed to send tx: {:?}", e);
+                                                                            }
+                                                                        }
                                                                     }
                                                                 }
                                                                 Err(e) => {
@@ -1238,7 +1266,25 @@ pub async fn event_handler(
                                                                     stale_backoff_until.remove(&path_idx);
                                                                     executed_successfully = true;
                                                                 }
-                                                                Err(e) => info!("❌ Failed to send tx: {:?}", e),
+                                                                Err(e) => {
+                                                                    let err_str = format!("{:?}", e);
+                                                                    if err_str.to_lowercase().contains("reverted") {
+                                                                        info!("❌ On-chain revert idx={}: {:?}", path_idx, e);
+                                                                        let fail_count = slippage_fail_count.entry(path_idx).or_insert(0);
+                                                                        *fail_count = fail_count.saturating_add(1);
+                                                                        if *fail_count >= SLIPPAGE_FAIL_THRESHOLD {
+                                                                            let until_block = current_block.saturating_add(SLIPPAGE_COOLDOWN_BLOCKS);
+                                                                            slippage_cooldown_until.insert(path_idx, until_block);
+                                                                            info!(
+                                                                                "[cooldown] idx={} on-chain revert {}x; skipping until block {}",
+                                                                                path_idx, *fail_count, until_block
+                                                                            );
+                                                                            slippage_fail_count.insert(path_idx, 0);
+                                                                        }
+                                                                    } else {
+                                                                        info!("❌ Failed to send tx: {:?}", e);
+                                                                    }
+                                                                }
                                                             }
                                                         }
                                                     }

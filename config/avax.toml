@@ -1,3 +1,5 @@
+address_file = "addresses/avax.toml"
+
 [chain]
 name = "avalanche"
 chain_id = 43114
@@ -15,22 +17,22 @@ blacklisted_tokens = [
 
 [[start_tokens]]
 symbol = "WAVAX"
-address = "0xb31f66aa3c1e785363f0875a1b74e27b85fd66c7"
+address = "{{AVAX_WAVAX}}"
 decimals = 18
 
 [[start_tokens]]
 symbol = "USDC"
-address = "0xb97ef9ef8734c71904d8002f8b6bc66dd9c48a6e"
+address = "{{AVAX_USDC}}"
 decimals = 6
 
 [[start_tokens]]
 symbol = "USDT"
-address = "0x9702230a8ea53601f5cd2dc00fdbc13d4df4a8c7"
+address = "{{AVAX_USDT}}"
 decimals = 6
 
 [[start_tokens]]
 symbol = "BTC.b"
-address = "0x152b9d0fdc40c096757f570a51e494bd4b943e50"
+address = "{{AVAX_BTCB}}"
 decimals = 8
 
 [dexes.v2]
@@ -73,25 +75,25 @@ router_v21 = "0xb4315e873dBcf96Ffd0acd8EA43f689D8c20fB30"  # LBRouter V2.1
 [gas]
 enabled = true
 token_symbol = "WAVAX"
-token_address = "0xb31f66aa3c1e785363f0875a1b74e27b85fd66c7"
+token_address = "{{AVAX_WAVAX}}"
 token_decimals = 18
 
 stable_symbol = "USDC"
-stable_address = "0xb97ef9ef8734c71904d8002f8b6bc66dd9c48a6e"
+stable_address = "{{AVAX_USDC}}"
 stable_decimals = 6
 pool_address = "0xa02ec3ba8d17887567672b2cdcaf525534636ea0"
 token_is_token0 = false
 
 [aave_v3]
-pool = "0x794a61358D6845594F94dc1DB02A252b5b4814aD"
-pool_addresses_provider = "0xa97684ead0e402dC232d5A977953DF7ECBaB3CDb"
-oracle = "0xEBd36016B3eD09D4693Ed4251c67Bd858c3c7C9C"
-data_provider = "0x243Aa95cAC2a25651eda86e80bEe66114413c43b"
+pool = "{{AVAX_AAVE_POOL}}"
+pool_addresses_provider = "{{AVAX_AAVE_PROVIDER}}"
+oracle = "{{AVAX_AAVE_ORACLE}}"
+data_provider = "{{AVAX_AAVE_DATA_PROVIDER}}"
 allowed_assets = [
-  "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E", # USDC
-  "0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7", # USDT
-  "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",  # WAVAX
-  "0x152b9d0fdc40c096757f570a51e494bd4b943e50" # BTC
+  "{{AVAX_USDC}}", # USDC
+  "{{AVAX_USDT}}", # USDT
+  "{{AVAX_WAVAX}}",  # WAVAX
+  "{{AVAX_BTCB}}" # BTC
 ]
 
 [execution]
@@ -105,3 +107,11 @@ max_base_fee_gwei = 100  # Maximum base fee in GWEI
 simulation_required = true  # Require successful simulation before execution
 estimated_gas = 550000  # Estimated gas units per arb transaction
 balancer_vault = "0xBA12222222228d8Ba445958a75a0704d566BF2C8"  # Balancer V2 Vault (AVAX)
+
+[liquidation]
+enabled = true
+max_position_size = 100000000.0
+estimated_gas = 550000
+balancer_vault = "0xBA12222222228d8Ba445958a75a0704d566BF2C8"
+min_liquidation_profit_usd = 5.0
+balancer_pool_ids = []

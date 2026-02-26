@@ -1,0 +1,1 @@
+timestamp_utc,trace_id,user,collateral_asset,debt_asset,debt_to_cover_usd,gross_profit_usd,gas_cost_usd,net_profit_usd,above_threshold,executed,tx_hash,flash_loan_source

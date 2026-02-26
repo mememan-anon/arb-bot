@@ -1,6 +1,7 @@
 pub mod abi;
 pub mod algebra;
 pub mod bundler;
+pub mod liquidation;
 pub mod concentrated_liquidity;
 pub mod config;
 pub mod constants;

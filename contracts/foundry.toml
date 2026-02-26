@@ -4,6 +4,7 @@ auto_detect_solc = false
 optimizer = true
 optimizer_runs = 200 # Default amount
 via_ir = true        # Enable IR optimizer — avoids stack-too-deep in complex functions
+evm_version = "cancun"  # Required: AAVE V3.1 on Base uses TLOAD/TSTORE (EIP-1153)
 remappings = [
   "forge-std/=lib/forge-std/src/",
   "openzeppelin-contracts/=lib/openzeppelin-contracts/contracts/",

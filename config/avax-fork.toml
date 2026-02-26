@@ -101,3 +101,11 @@ max_base_fee_gwei = 100
 simulation_required = true
 estimated_gas = 550000  # Estimated gas units per arb transaction
 balancer_vault = "0xBA12222222228d8Ba445958a75a0704d566BF2C8"  # Balancer V2 Vault (AVAX)
+
+[liquidation]
+enabled = true
+max_position_size = 100000000.0
+estimated_gas = 550000
+balancer_vault = "0xBA12222222228d8Ba445958a75a0704d566BF2C8"
+min_liquidation_profit_usd = 5.0
+balancer_pool_ids = []

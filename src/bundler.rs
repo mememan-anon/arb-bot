@@ -67,6 +67,11 @@ pub struct Bundler {
     pub bot: ArbBot<SignerProvider>,
     pub provider: SignerProvider,
     pub flashbots: SignerMiddleware<FlashbotsMiddleware<SignerProvider, LocalWallet>, LocalWallet>,
+    /// When set, all arb txs are broadcast here instead of the public RPC.
+    /// Tx confirmation is still polled via the main `provider`.
+    pub private_rpc_url: Option<String>,
+    /// Reused HTTP client — avoids allocating a TLS context + connection pool on every tx.
+    pub http_client: reqwest::Client,
 }
 
 impl Bundler {
@@ -112,6 +117,8 @@ impl Bundler {
         let bot = ArbBot::new(bot_addr, client.clone());
 
         Ok(Self {
+            private_rpc_url: env.private_rpc_url.clone(),
+            http_client: reqwest::Client::new(),
             config,
             env,
             sender,
@@ -181,9 +188,87 @@ impl Bundler {
     }
 
     pub async fn send_tx(&self, tx: Eip1559TransactionRequest) -> Result<TxHash> {
-        let pending_tx = self.provider.send_transaction(tx, None).await?;
-        let receipt = pending_tx.await?.ok_or_else(|| anyhow!("Tx dropped"))?;
-        Ok(receipt.transaction_hash)
+        // Sign the transaction to get raw bytes regardless of submission path.
+        let raw = self.sign_tx(tx).await?;
+
+        if let Some(ref private_url) = self.private_rpc_url {
+            // ── Private relay submission (MEV protection) ────────────────────
+            // POST raw tx to the private RPC only — never touches the public mempool.
+            // Receipt polling is spawned as a background task so this method returns
+            // immediately and the event loop continues scanning the next block.
+            let raw_hex = format!("0x{}", hex::encode(raw.as_ref()));
+            let body = serde_json::json!({
+                "jsonrpc": "2.0",
+                "method":  "eth_sendRawTransaction",
+                "params":  [raw_hex],
+                "id":      1
+            });
+            let relay_resp = self.http_client
+                .post(private_url)
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| anyhow!("private relay POST failed: {e}"))?
+                .json::<serde_json::Value>()
+                .await
+                .map_err(|e| anyhow!("private relay response parse failed: {e}"))?;
+
+            if let Some(err) = relay_resp.get("error") {
+                return Err(anyhow!("private relay rejected tx: {err}"));
+            }
+
+            // Derive tx hash: from relay response first, then keccak256 fallback.
+            let tx_hash: TxHash = relay_resp["result"]
+                .as_str()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or_else(|| ethers::utils::keccak256(raw.as_ref()).into());
+
+            log::info!("[private relay] tx submitted: {:?}", tx_hash);
+
+            // Spawn a background task to poll for the receipt.
+            // send_tx returns immediately — the event loop is never blocked.
+            let provider_clone = self.provider.clone();
+            tokio::spawn(async move {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+                loop {
+                    if std::time::Instant::now() >= deadline {
+                        log::warn!("[private relay] tx {:?} not confirmed within 90 s", tx_hash);
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    if let Ok(Some(receipt)) = provider_clone.get_transaction_receipt(tx_hash).await {
+                        if receipt.status == Some(U64::from(0u64)) {
+                            log::warn!(
+                                "[private relay] ❌ reverted on-chain (tx: {:?}, block: {:?})",
+                                receipt.transaction_hash, receipt.block_number,
+                            );
+                        } else {
+                            log::info!(
+                                "[private relay] ✅ confirmed (tx: {:?}, block: {:?})",
+                                receipt.transaction_hash, receipt.block_number,
+                            );
+                        }
+                        return;
+                    }
+                }
+            });
+
+            // Return the hash immediately — scanning resumes on the next block.
+            Ok(tx_hash)
+        } else {
+            // ── Standard public-RPC submission ───────────────────────────────
+            let pending = self.provider.send_raw_transaction(raw).await?;
+            let receipt = pending.await?.ok_or_else(|| anyhow!("Tx dropped"))?;
+            // EIP-658: status = 0 → reverted.
+            if receipt.status == Some(U64::from(0u64)) {
+                return Err(anyhow!(
+                    "execution reverted on-chain (tx: {:?}, block: {:?})",
+                    receipt.transaction_hash,
+                    receipt.block_number,
+                ));
+            }
+            Ok(receipt.transaction_hash)
+        }
     }
 
     pub async fn transfer_in_tx(

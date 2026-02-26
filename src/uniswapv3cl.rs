@@ -28,7 +28,7 @@ const MULTICALL3_ADDR: &str = "0xcA11bde05977b3631167028862bE2a173976CA11";
 const AGGREGATE3_SEL: [u8; 4] = [0x82, 0xad, 0x56, 0xcb];
 /// Pools per Multicall3 batch (2 calls each: slot0 + liquidity).
 /// 5000 pools → 10000 calls → ~1.6 MB response — safe on all major nodes.
-const BATCH_SIZE: usize = 5000;
+const BATCH_SIZE: usize = 2500;
 
 abigen!(
     UniswapV3CLERC20,

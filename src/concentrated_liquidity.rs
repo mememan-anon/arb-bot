@@ -256,14 +256,23 @@ pub fn calculate_amount_out(
         break;
     }
 
-    // Conservative haircut: deduct 1 bp from the simulated output.
+    // Conservative haircut: deduct 25 bp from the simulated output per CL hop.
     //
-    // On-chain V3 pools use mulDivRoundingUp for intermediate sqrtPrice
-    // calculations, which systematically produces slightly less output than our
-    // truncating-division simulator.  The 1 bp haircut compensates for this
-    // rounding difference.  The larger source of overestimation (stale pool
-    // state) is addressed by the targeted confirm-phase refresh in strategy.rs.
-    let haircut = total_out / U256::from(10_000u64);
+    // Sources of overestimation in the off-chain CL simulator:
+    //   1. On-chain V3/CL pools use mulDivRoundingUp for intermediate sqrtPrice
+    //      calculations, producing slightly less output than truncating-division.
+    //   2. Stale pool state: sqrtPrice/liquidity/tick are fetched at the start
+    //      of each block via multicall, but by the time a tx is submitted
+    //      (seconds later on a fast chain) other swaps have already moved the
+    //      pool, especially on high-activity token pairs.
+    //   3. Tick-data incompleteness: only ~10 ticks are stored; real swaps that
+    //      cross more ticks see lower amounts-out than the simulator predicts.
+    //
+    // Empirically, the combined overestimation for a 3-hop CL-V2-CL path on
+    // active pairs sits at ~25 bp per CL hop (~50 bp total).  The haircut
+    // ensures such thin-margin phantom arbs are filtered before eth_call
+    // simulation and before any on-chain transaction is sent.
+    let haircut = total_out * U256::from(25u64) / U256::from(10_000u64);
     total_out = total_out.saturating_sub(haircut);
 
     Some(total_out)

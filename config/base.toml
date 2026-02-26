@@ -1,58 +1,45 @@
+arbitrage_enabled = false
+address_file = "addresses/base.toml"
+
 [chain]
 name = "base"
 chain_id = 8453
-# RPC URLs — set WSS_URL and HTTPS_URL in .env to override (keep API keys out of this file)
 https_url = ""
-wss_url   = ""
-wss_urls  = []
-
+wss_url = ""
+wss_urls = []
 cache_dir = "base"
-# Output cap: real arb is ~1.001-1.02x; anything above ~5x is honeypot/simulation error.
-# Formula: max allowed return = max_profit_pct / 10  (so 50 → 5x cap)
 max_profit_pct = 50.0
 blacklisted_tokens = [
-  "0x5ab3d4c385b400f3abb49e80de2faf6a88a7b691",  # FLOCK — fee-on-transfer (tax token)
-  "0x74ccbe53f77b08632ce0cb91d3a545bf6b8e0979",  # fBOMB — FoT; K() invariant fails in vAMM pairs
+  "0x5ab3d4c385b400f3abb49e80de2faf6a88a7b691",
+  "0x74ccbe53f77b08632ce0cb91d3a545bf6b8e0979",
 ]
-
-# ── Start tokens ────────────────────────────────────────────────────────────
 
 [[start_tokens]]
 symbol = "WETH"
-address = "0x4200000000000000000000000000000000000006"
+address = "{{BASE_WETH}}"
 decimals = 18
-price_pool = "0x6c561B446416E1A00E8E93E221854d6eA4171372"  # Uniswap V3 WETH/USDC on Base
+price_pool = "0x6c561B446416E1A00E8E93E221854d6eA4171372"
 
 [[start_tokens]]
 symbol = "USDC"
-address = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+address = "{{BASE_USDC}}"
 decimals = 6
 
 [[start_tokens]]
 symbol = "cbBTC"
-address = "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf"
+address = "{{BASE_CBBTC}}"
 decimals = 8
-price_pool = "0xfBB6Eed8e7aa03B138556eeDaF5D271A5E1e43ef"  # Uniswap V3 USDC/cbBTC on Base
+price_pool = "0xfBB6Eed8e7aa03B138556eeDaF5D271A5E1e43ef"
 
-# ── DEXes ────────────────────────────────────────────────────────────────────
-
-# Uniswap V2 on Base + Aerodrome (volatile + stable pools)
-# Pool data pulled via:
-#   python scripts/pull_base_uniswap.py --v2           (Uniswap V2 pairs)
-#   python scripts/pull_aerodrome.py --amm             (Aerodrome V1 volatile + stable)
-# Cached to: cache/base/.cached-pools.csv
-# CSV version codes: 2=UniV2, 4=SolidlyStable, 5=SolidlyVolatile
-# Aerodrome volatile pools use version=5, fee=30 (0.30%)
-# Aerodrome stable pools use version=4, fee=5 (0.05%)
 [dexes.v2]
 enabled = true
 factories = [
-  "0x8909Dc15e40173Ff4699343b6eb8132c65e18eC6",  # Uniswap V2 Factory (Base)
-  "0x02a84c1b3BBD7401a5f7fa98a384EBC70bB5749E",  # PancakeSwap V2 Factory (Base)
+  "0x8909Dc15e40173Ff4699343b6eb8132c65e18eC6",
+  "0x02a84c1b3BBD7401a5f7fa98a384EBC70bB5749E",
 ]
 routers = [
-  "0x4752ba5dbc23f44d87826276bf6fd6b1c372ad24",  # Uniswap V2 Router02 (Base)
-  "0x8cFe327CEc66d1C090Dd72bd0FF11d690C33a2Eb",  # PancakeSwap V2 Router (Base)
+  "0x4752ba5dbc23f44d87826276bf6fd6b1c372ad24",
+  "0x8cFe327CEc66d1C090Dd72bd0FF11d690C33a2Eb",
 ]
 from_blocks = [0, 0]
 direct_pair = true
@@ -70,93 +57,243 @@ factories = []
 routers = []
 quoter = ""
 
-# Uniswap V3 concentrated liquidity on Base (slot0 ABI)
-# + Aerodrome Slipstream CL pools (same slot0/uniswapV3SwapCallback ABI)
-# Pool data pulled via:
-#   python scripts/pull_base_uniswap.py --v3           (Uniswap V3)
-#   python scripts/pull_aerodrome.py --cl              (Aerodrome Slipstream)
-# Cached to: cache/base/.cached-v3cl-pools.csv
 [dexes.uniswapv3cl]
 enabled = true
-# Primary factory (Uniswap V3 — backward compat single-factory field)
-factory = "0x33128a8fC17869897dcE68Ed026d694621f6FDfD"   # Uniswap V3 Factory (Base)
-# Additional V3-compatible factories (same slot0/swap ABI — pool data lands in same CSV)
+factory = "0x33128a8fC17869897dcE68Ed026d694621f6FDfD"
 factories = [
-  "0x0BFbCF9fa4f9C56B0F40a672E3D1B50B6eD5B5F8",  # PancakeSwap V3 Factory (Base)
+  "0x0BFbCF9fa4f9C56B0F40a672E3D1B50B6eD5B5F8",
 ]
-# Routers indexed parallel to factories[] above
-router  = "0x2626664c2603336E57B271c5C0b26F421741e481"   # Uniswap V3 SwapRouter02 (Base)
+router = "0x2626664c2603336E57B271c5C0b26F421741e481"
 routers = [
-  "0x1b81D678ffb9C0263b24A97847620C99d213eB14",  # PancakeSwap V3 SmartRouter (Base)
+  "0x1b81D678ffb9C0263b24A97847620C99d213eB14",
 ]
-quoter  = "0x3d4e44Eb1374240CE5F1B136041212501e4a0139"   # Uniswap V3 QuoterV2 (Base)
-
-# Raw Uniswap V3 liquidity floor (NOT USD). Filters dust with near-zero active.
-#leave it like this since it just idicates some liquidity. Main filtering at csv generation 50k tvl
+quoter = "0x3d4e44Eb1374240CE5F1B136041212501e4a0139"
 min_liquidity = 1
 
-# Uniswap V4 — also stored in the V3CL CSV for data purposes.
-# NOTE: V4 uses a singleton PoolManager; on-chain execution requires a new
-#       bot contract path (_swapV4PoolManager). Currently pulled/stored as data
-#       only; set enabled = false until the contract is updated.
-# Pool data pulled via: python scripts/pull_base_uniswap.py --v4
-# Cached to: cache/base/.cached-v4cl-pools.csv
 [dexes.uniswapv4cl]
 enabled = false
-pool_manager = "0x498581fF718922c3f8e6A244956aF099B2652b2b"  # Uniswap V4 PoolManager (Base)
+pool_manager = "0x498581fF718922c3f8e6A244956aF099B2652b2b"
 
-# PancakeSwap Infinity (V4) — singleton PoolManager architecture with Flash Accounting.
-# Two pool types: CL (concentrated liquidity) and Bin (Liquidity Book).
-# Requires new bot contract path (_swapInfinityPoolManager) — NOT yet implemented.
-# Contract addresses from: github.com/pancakeswap/infinity-core/script/config/base-mainnet.json
 [dexes.pancakeswap_infinity]
 enabled = false
-vault         = "0x238a358808379702088667322f80aC48bAd5e6c4"  # PCS Infinity Vault (Base)
-cl_pool_manager  = "0xa0FfB9c1CE1Fe56963B0321B32E7A0302114058b"  # PCS Infinity CLPoolManager (Base)
-bin_pool_manager = "0xC697d2898e0D09264376196696c51D7aBbbAA4a9"  # PCS Infinity BinPoolManager (Base)
+vault = "0x238a358808379702088667322f80aC48bAd5e6c4"
+cl_pool_manager = "0xa0FfB9c1CE1Fe56963B0321B32E7A0302114058b"
+bin_pool_manager = "0xC697d2898e0D09264376196696c51D7aBbbAA4a9"
 
 [dexes.lfj]
 enabled = false
 router_v22 = ""
 router_v21 = ""
 
-# ── Gas pricing pool ─────────────────────────────────────────────────────────
-# Uses a live on-chain pool to convert ETH gas costs → USD equivalent profit
-# threshold. WETH/USDC 0.05% Uniswap V3 pool on Base.
+# Gas price token pair
 [gas]
 enabled = true
-token_symbol  = "WETH"
-token_address = "0x4200000000000000000000000000000000000006"
+token_symbol = "WETH"
+token_address = "{{BASE_WETH}}"
 token_decimals = 18
-
-stable_symbol  = "USDC"
-stable_address = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+stable_symbol = "USDC"
+stable_address = "{{BASE_USDC}}"
 stable_decimals = 6
-pool_address   = "0xd0b53D9277642d899DF5C87A3966A349A798F224"  # UniV3 WETH/USDC 0.05%
-token_is_token0 = true   # WETH (0x4200...) < USDC (0x8335...) → token0
+pool_address = "0xd0b53D9277642d899DF5C87A3966A349A798F224"
+token_is_token0 = true
 
-# ── AaveV3 (Base) ────────────────────────────────────────────────────────────
-# Verify latest addresses at: https://docs.aave.com/developers/deployed-contracts/v3-mainnet/base
 [aave_v3]
-pool                    = "0xA238Dd80C259a72e81d7e4664a9801593F98d1c5"
-pool_addresses_provider = "0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64B"
-oracle                  = "0x2Cc0Fc26eD4563A5ce5e8bdcfe1A2878676Ae156"
-data_provider           = "0x0F43731EB8d45A581f4a36DD74F5f358bc90C73A"
+pool = "0xA238Dd80C259a72e81d7e4664a9801593F98d1c5"
+pool_addresses_provider = "0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64D"
+oracle = "0x2Cc0Fc26eD4563A5ce5e8bdcfe1A2878676Ae156"
+data_provider = "0x0F43731EB8d45A581f4a36DD74F5f358bc90C73A"
+ui_pool_data_provider = "0xb84A20e848baE3e13897934bB4e74E2225f4546B"
+monitoring_enabled = true
+borrowers_file = "cache/base/borrowers.txt"
 allowed_assets = [
-  "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",  # USDC
-  "0x4200000000000000000000000000000000000006",  # WETH
-  "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf",  # cbBTC
-  ]
+  "{{BASE_USDC}}",
+  "{{BASE_WETH}}",
+  "{{BASE_CBBTC}}",
+]
 
-# ── Execution ─────────────────────────────────────────────────────────────────
+# Base does not expose a full pending-tx stream — disable Path B to suppress warnings.
+chainlink_pending_txs = false
+
+[aave_v3.offchain_price]
+enabled = true
+dispatch_price_updates = true
+require_onchain_confirmation = true
+max_staleness_secs = 1200
+max_confidence_bps = 150
+min_rescan_interval_ms = 5000
+
+# Arbitrage executor settings
 [execution]
 enabled = true
-min_profit_threshold = 0.5      # Minimum net profit in USD (0.0 = log everything; raise after testing)
+min_profit_threshold = 0.5
 max_position_size = 100000000.0
 use_flashloan = true
 default_flashloan_provider = "Balancer"
-max_priority_fee_gwei = 0.01     # Base L2: priority fees are tiny
-max_base_fee_gwei = 5            # Base L2: very cheap
+max_priority_fee_gwei = 0.01
+max_base_fee_gwei = 5
 simulation_required = true
 estimated_gas = 550000
-balancer_vault = "0xBA12222222228d8Ba445958a75a0704d566BF2C8"  # Balancer V2 Vault (same all chains)
+balancer_vault = "0xBA12222222228d8Ba445958a75a0704d566BF2C8"
+
+# Liquidation executor settings
+[liquidation]
+enabled = true
+max_position_size = 100000000.0
+estimated_gas = 550000
+balancer_vault = "0xBA12222222228d8Ba445958a75a0704d566BF2C8"
+min_liquidation_profit_usd = 5.0
+# Morpho Blue on Base — checked first (0% fee, broad token coverage).
+# If Morpho holds enough of the debt token, it is preferred over Balancer.
+morpho = "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb"
+# AAVE V3 lending pool — last-resort flash-loan source (0.05% fee).
+# Only used when both Morpho and Balancer are short on the debt token.
+aave_pool = "0xA238Dd80C259a72e81d7e4664a9801593F98d1c5"
+# Opportunity log — every detected liquidation (profitable or not) is appended.
+opportunity_log = "cache/base/liquidation_opportunities.csv"
+balancer_pool_ids = [
+  "0xb7b8b3afc010169779c5c2385ec0eb0477fe3347",
+  "0x7ab124ec4029316c2a42f713828ddf2a192b36db",
+]
+
+[aave_v3.offchain_price.pyth_hermes]
+endpoint = "https://hermes.pyth.network"
+poll_interval_ms = 700
+
+[aave_v3.offchain_price.chainlink_streams]
+endpoint = "https://data.chain.link"
+poll_interval_ms = 1000
+
+[[aave_v3.offchain_price.assets]]
+asset = "{{BASE_WETH}}"
+symbol = "WETH"
+pyth_feed_id = "{{BASE_PYTH_WETH}}"
+chainlink_feed_path = "eth-usd"
+
+[[aave_v3.offchain_price.assets]]
+asset = "{{BASE_USDC}}"
+symbol = "USDC"
+pyth_feed_id = "{{BASE_PYTH_USDC}}"
+chainlink_feed_path = "usdc-usd"
+
+[[aave_v3.offchain_price.assets]]
+asset = "{{BASE_CBBTC}}"
+symbol = "cbBTC"
+pyth_feed_id = "{{BASE_PYTH_CBBTC}}"
+chainlink_feed_path = "cbbtc-usd"
+
+[[aave_v3.offchain_price.assets]]
+asset = "{{BASE_CBETH}}"
+symbol = "cbETH"
+pyth_feed_id = "{{BASE_PYTH_CBETH}}"
+chainlink_feed_path = "chainlink-proxy"
+
+[[aave_v3.offchain_price.assets]]
+asset = "{{BASE_WSTETH}}"
+symbol = "wstETH"
+pyth_feed_id = "{{BASE_PYTH_WSTETH}}"
+chainlink_feed_path = "chainlink-proxy"
+
+[[aave_v3.offchain_price.assets]]
+asset = "{{BASE_WEETH}}"
+symbol = "weETH"
+pyth_feed_id = "{{BASE_PYTH_WEETH}}"
+chainlink_feed_path = "chainlink-proxy"
+
+[[aave_v3.offchain_price.assets]]
+asset = "{{BASE_EZETH}}"
+symbol = "ezETH"
+pyth_feed_id = "{{BASE_PYTH_EZETH}}"
+chainlink_feed_path = "chainlink-proxy"
+
+[[aave_v3.offchain_price.assets]]
+asset = "{{BASE_GHO}}"
+symbol = "GHO"
+pyth_feed_id = "{{BASE_PYTH_GHO}}"
+chainlink_feed_path = "chainlink-proxy"
+
+[[aave_v3.offchain_price.assets]]
+asset = "{{BASE_RSETH}}"
+symbol = "rsETH"
+pyth_feed_id = "{{BASE_PYTH_RSETH}}"
+chainlink_feed_path = "chainlink-proxy"
+
+[[aave_v3.offchain_price.assets]]
+asset = "{{BASE_LBTC}}"
+symbol = "LBTC"
+pyth_feed_id = "{{BASE_PYTH_LBTC}}"
+chainlink_feed_path = "chainlink-proxy"
+
+[[aave_v3.offchain_price.assets]]
+asset = "{{BASE_EURC}}"
+symbol = "EURC"
+pyth_feed_id = "{{BASE_PYTH_EURC}}"
+chainlink_feed_path = "chainlink-proxy"
+
+[[aave_v3.offchain_price.assets]]
+asset = "{{BASE_AAVE}}"
+symbol = "AAVE"
+pyth_feed_id = "{{BASE_PYTH_AAVE}}"
+chainlink_feed_path = "chainlink-proxy"
+
+[[aave_v3.offchain_price.assets]]
+asset = "{{BASE_TBTC}}"
+symbol = "tBTC"
+pyth_feed_id = "{{BASE_PYTH_TBTC}}"
+chainlink_feed_path = "chainlink-proxy"
+
+[[aave_v3.offchain_price.assets]]
+asset = "{{BASE_SYRUPUSDC}}"
+symbol = "syrupUSDC"
+chainlink_feed_path = "chainlink-proxy"
+
+[[aave_v3.chainlink_feeds]]
+asset = "{{BASE_WETH}}"
+proxy = "{{BASE_CHAINLINK_PROXY_WETH}}"
+
+[[aave_v3.chainlink_feeds]]
+asset = "{{BASE_CBETH}}"
+proxy = "{{BASE_CHAINLINK_PROXY_CBETH}}"
+
+[[aave_v3.chainlink_feeds]]
+asset = "{{BASE_WSTETH}}"
+proxy = "{{BASE_CHAINLINK_PROXY_WSTETH}}"
+
+[[aave_v3.chainlink_feeds]]
+asset = "{{BASE_USDC}}"
+proxy = "{{BASE_CHAINLINK_PROXY_USDC}}"
+
+[[aave_v3.chainlink_feeds]]
+asset = "{{BASE_WEETH}}"
+proxy = "{{BASE_CHAINLINK_PROXY_WEETH}}"
+
+[[aave_v3.chainlink_feeds]]
+asset = "{{BASE_EZETH}}"
+proxy = "{{BASE_CHAINLINK_PROXY_EZETH}}"
+
+[[aave_v3.chainlink_feeds]]
+asset = "{{BASE_GHO}}"
+proxy = "{{BASE_CHAINLINK_PROXY_GHO}}"
+
+[[aave_v3.chainlink_feeds]]
+asset = "{{BASE_RSETH}}"
+proxy = "{{BASE_CHAINLINK_PROXY_RSETH}}"
+
+[[aave_v3.chainlink_feeds]]
+asset = "{{BASE_LBTC}}"
+proxy = "{{BASE_CHAINLINK_PROXY_LBTC}}"
+
+[[aave_v3.chainlink_feeds]]
+asset = "{{BASE_EURC}}"
+proxy = "{{BASE_CHAINLINK_PROXY_EURC}}"
+
+[[aave_v3.chainlink_feeds]]
+asset = "{{BASE_AAVE}}"
+proxy = "{{BASE_CHAINLINK_PROXY_AAVE}}"
+
+[[aave_v3.chainlink_feeds]]
+asset = "{{BASE_TBTC}}"
+proxy = "{{BASE_CHAINLINK_PROXY_TBTC}}"
+
+[[aave_v3.chainlink_feeds]]
+asset = "{{BASE_SYRUPUSDC}}"
+proxy = "{{BASE_CHAINLINK_PROXY_SYRUPUSDC}}"

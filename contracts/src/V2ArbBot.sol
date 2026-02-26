@@ -11,13 +11,14 @@ import "./interface/IAaveV3.sol";
 import "./interface/IAlgebraPool.sol";
 import "./interface/IUniswapV3Pool.sol";
 import "./interface/ILBPair.sol";
+import "./interface/IMorpho.sol";
 
 /// @dev Minimal extension of IERC20 to access decimals() for stable AMM math.
 interface IERC20Extended is IERC20 {
     function decimals() external view returns (uint8);
 }
 
-contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleReceiver, IUniswapV3SwapCallback {
+contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleReceiver, IUniswapV3SwapCallback, IMorphoFlashLoanCallback {
     // can perform flashloan, multihop swaps in Uniswap V2 variant pools
     using SafeERC20 for IERC20;
 
@@ -33,6 +34,41 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
     ///      calling the callbacks and draining contract tokens.
     address private _pendingAlgebraPool;
     address private _pendingV3Pool;
+
+    /// @dev Liquidation transient auth — set before Balancer flash loan, cleared inside receiveFlashLoan.
+    bool    private _liquidationPending;
+    address private _liquidationVault;
+
+    /// @dev Morpho flash loan transient auth — set before flashLoan(), cleared in onMorphoFlashLoan.
+    bool    private _morphoLiquidationPending;
+    /// @dev Balancer vault used for swap legs when liquidating via Morpho flash loan.
+    ///      address(0) = fall back to Uniswap V3 for all swap legs.
+    address private _pendingSwapVault;
+
+    /// @dev AAVE V3 flash loan liquidation transient auth — used as last-resort fallback.
+    bool    private _aaveLiquidationPending;
+    /// @dev Swap vault passed to _executeLiquidationCore during AAVE flash loan callback.
+    address private _pendingAaveLiqSwapVault;
+
+    // ── Liquidation parameters ───────────────────────────────────────────────
+    struct LiquidationParams {
+        address user;
+        address collateralAsset;
+        address debtAsset;
+        uint256 debtToCover;
+        /// @dev Uniswap V3 pool address for collateral→WETH hop (address(0) if collateral is WETH).
+        address collateralPool;
+        /// @dev Uniswap V3 pool address for WETH→debt hop (address(0) if debt is WETH).
+        address debtPool;
+        /// @dev Balancer V2 poolId for collateral→WETH swap.
+        ///      Non-zero takes priority over collateralPool (0% protocol fee).
+        ///      bytes32(0) → fall back to Uniswap V3 collateralPool.
+        bytes32 colBalancerPool;
+        /// @dev Balancer V2 poolId for WETH→debt swap.
+        ///      Non-zero takes priority over debtPool (0% protocol fee).
+        ///      bytes32(0) → fall back to Uniswap V3 debtPool.
+        bytes32 debtBalancerPool;
+    }
 
     receive() external payable {
         // wrap on receive
@@ -471,13 +507,23 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
         uint[] memory feeAmounts,
         bytes memory data
     ) external override {
-        address vault;
+        // ── Liquidation path ─────────────────────────────────────────────────
+        if (_liquidationPending) {
+            require(msg.sender == _liquidationVault, "not vault");
+            _liquidationPending = false;
+            _liquidationVault   = address(0);
+            _executeLiquidationFlashLoan(
+                address(tokens[0]), amounts[0], feeAmounts[0], data
+            );
+            return;
+        }
 
+        // ── Arb path (unchanged) ─────────────────────────────────────────────
+        address vault;
         assembly {
             let offset := add(data, 0x20)
             vault := mload(add(offset, 0x40))
         }
-
         require(msg.sender == vault, "not vault");
 
         IERC20 token = tokens[0];
@@ -490,6 +536,215 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
         // Repay principal + Balancer fee (feeAmounts[0] > 0 on some Balancer deployments).
         // Using safeTransfer to support non-standard ERC20 tokens (e.g. USDT).
         token.safeTransfer(vault, amountIn + feeAmounts[0]);
+    }
+
+    // ── Flash-loan-based AAVE V3 liquidation ──────────────────────────────────
+
+    /// @notice Flash-borrow `p.debtToCover` of `p.debtAsset` from Balancer,
+    ///         liquidate `p.user` on AAVE v3, swap received collateral back to
+    ///         the debt asset, and repay the flash loan.
+    ///         Any surplus stays in the contract (use recoverToken to sweep it).
+    function triggerLiquidation(
+        address balancerVault,
+        LiquidationParams calldata p
+    ) external {
+        require(msg.sender == owner, "not owner");
+        _liquidationPending = true;
+        _liquidationVault   = balancerVault;
+
+        IERC20[] memory tokens = new IERC20[](1);
+        tokens[0] = IERC20(p.debtAsset);
+
+        uint256[] memory amounts = new uint256[](1);
+        amounts[0] = p.debtToCover;
+
+        IBalancerVault(balancerVault).flashLoan(
+            IFlashLoanRecipient(address(this)),
+            tokens,
+            amounts,
+            abi.encode(p)
+        );
+    }
+
+    // ── Shared liquidation core ────────────────────────────────────────────────
+
+    /// @dev Core liquidation: approve AAVE, call liquidationCall, swap collateral → debt.
+    ///      Does NOT handle flash loan repayment — callers do that themselves.
+    ///
+    /// @param swapVault Balancer vault address for Balancer-pool swap legs.
+    ///                  Pass address(0) to skip Balancer and use Uniswap V3 for all legs.
+    function _executeLiquidationCore(
+        address swapVault,
+        LiquidationParams memory p
+    ) internal {
+        // 1. Approve AAVE pool to pull the debt repayment.
+        IERC20(p.debtAsset).safeApprove(aavePool, 0);
+        IERC20(p.debtAsset).safeApprove(aavePool, p.debtToCover);
+
+        // 2. Liquidate — receive collateralAsset underlying tokens.
+        IAaveV3Pool(aavePool).liquidationCall(
+            p.collateralAsset,
+            p.debtAsset,
+            p.user,
+            p.debtToCover,
+            false // receive underlying, not aToken
+        );
+
+        // 3. Swap collateral → debtAsset if they differ.
+        if (p.collateralAsset != p.debtAsset) {
+            address weth = address(mainCurrency);
+            uint256 bal  = IERC20(p.collateralAsset).balanceOf(address(this));
+
+            if (p.collateralAsset != weth) {
+                if (p.colBalancerPool != bytes32(0) && swapVault != address(0)) {
+                    // collateral → WETH via Balancer (0% protocol fee)
+                    bal = _swapBalancer(swapVault, p.colBalancerPool, p.collateralAsset, weth, bal);
+                } else if (p.collateralPool != address(0)) {
+                    // collateral → WETH via Uniswap V3 (fallback)
+                    bal = _swapUniswapV3Pool(p.collateralPool, p.collateralAsset, weth, bal);
+                }
+            }
+
+            if (p.debtAsset != weth) {
+                if (p.debtBalancerPool != bytes32(0) && swapVault != address(0)) {
+                    // WETH → debtAsset via Balancer (0% protocol fee)
+                    _swapBalancer(swapVault, p.debtBalancerPool, weth, p.debtAsset, bal);
+                } else if (p.debtPool != address(0)) {
+                    // WETH → debtAsset via Uniswap V3 (fallback)
+                    _swapUniswapV3Pool(p.debtPool, weth, p.debtAsset, bal);
+                }
+            }
+        }
+    }
+
+    /// @dev Executed inside receiveFlashLoan when _liquidationPending was set.
+    ///      At entry this contract holds `debtAmount` of the debt asset.
+    function _executeLiquidationFlashLoan(
+        address debtToken,
+        uint256 debtAmount,
+        uint256 feeAmount,
+        bytes memory data
+    ) internal {
+        LiquidationParams memory p = abi.decode(data, (LiquidationParams));
+
+        // msg.sender here = Balancer Vault (still on the call stack).
+        _executeLiquidationCore(msg.sender, p);
+
+        // 4. Repay flash loan (principal + Balancer fee, usually 0).
+        IERC20(debtToken).safeTransfer(msg.sender, debtAmount + feeAmount);
+    }
+
+    // ── Morpho flash-loan-backed AAVE V3 liquidation ──────────────────────────
+
+    /// @notice Flash-borrow `p.debtToCover` of `p.debtAsset` from Morpho Blue
+    ///         (0% fee), liquidate `p.user` on AAVE v3, swap received collateral
+    ///         back to the debt asset, then repay the flash loan.
+    ///         Any surplus stays in the contract (use recoverToken to sweep).
+    ///
+    /// @param morpho     Morpho Blue address (0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb on Base)
+    /// @param swapVault  Balancer vault for Balancer swap legs; address(0) = V3-only path.
+    /// @param p          Liquidation parameters (same struct as triggerLiquidation).
+    function triggerLiquidationWithMorpho(
+        address morpho,
+        address swapVault,
+        LiquidationParams calldata p
+    ) external {
+        require(msg.sender == owner, "not owner");
+        _morphoLiquidationPending = true;
+        _liquidationVault = morpho;
+        _pendingSwapVault  = swapVault;
+
+        IMorpho(morpho).flashLoan(p.debtAsset, p.debtToCover, abi.encode(p));
+    }
+
+    /// @inheritdoc IMorphoFlashLoanCallback
+    /// @dev Called by Morpho Blue after it transfers tokens to this contract.
+    ///      Executes the liquidation, then approves Morpho to pull back `assets`.
+    ///      Morpho Blue fee = 0%, so we approve exactly `assets` with no premium.
+    function onMorphoFlashLoan(uint256 assets, bytes calldata data) external override {
+        require(
+            _morphoLiquidationPending && msg.sender == _liquidationVault,
+            "not morpho"
+        );
+        _morphoLiquidationPending = false;
+        _liquidationVault  = address(0);
+        address swapVault  = _pendingSwapVault;
+        _pendingSwapVault  = address(0);
+
+        LiquidationParams memory p = abi.decode(data, (LiquidationParams));
+
+        // Execute core: liquidate + swap (uses V3 or Balancer depending on swapVault).
+        _executeLiquidationCore(swapVault, p);
+
+        // Morpho repayment: approve Morpho to pull back exactly `assets` (0% fee).
+        IERC20(p.debtAsset).safeApprove(msg.sender, 0);
+        IERC20(p.debtAsset).safeApprove(msg.sender, assets);
+    }
+
+    // ── AAVE V3 flash-loan-backed liquidation (last-resort, 0.05% fee) ────────
+
+    /// @notice Flash-borrow `p.debtToCover` of `p.debtAsset` from AAVE V3
+    ///         (0.05% fee), liquidate `p.user`, swap received collateral back
+    ///         to the debt asset, then repay the flash loan.  Surplus stays
+    ///         in the contract.
+    ///
+    /// @dev Uses the `aavePool` address already stored in the contract
+    ///      (set via setAavePool).  Reverts if aavePool is not configured.
+    ///
+    /// @param swapVault Balancer vault for Balancer swap legs; address(0) = V3-only.
+    /// @param p         Liquidation parameters (same struct as triggerLiquidation).
+    function triggerLiquidationWithAave(
+        address swapVault,
+        LiquidationParams calldata p
+    ) external {
+        require(msg.sender == owner, "not owner");
+        require(aavePool != address(0), "aave pool not set");
+        _aaveLiquidationPending    = true;
+        _pendingAaveLiqSwapVault   = swapVault;
+        IAaveV3Pool(aavePool).flashLoanSimple(
+            address(this),
+            p.debtAsset,
+            p.debtToCover,
+            abi.encode(p),
+            0 // referralCode
+        );
+    }
+
+    /// @dev Single-pool swap through Balancer V2 Vault.
+    ///      Approves the vault, executes GIVEN_IN swap, returns amountOut.
+    ///      The Balancer protocol fee on Base is 0% so the full amountIn is converted.
+    function _swapBalancer(
+        address vault,
+        bytes32 poolId,
+        address tokenIn,
+        address tokenOut,
+        uint256 amountIn
+    ) internal returns (uint256 amountOut) {
+        IERC20(tokenIn).safeApprove(vault, 0);
+        IERC20(tokenIn).safeApprove(vault, amountIn);
+
+        IBalancerVault.SingleSwap memory singleSwap = IBalancerVault.SingleSwap({
+            poolId:   poolId,
+            kind:     IBalancerVault.SwapKind.GIVEN_IN,
+            assetIn:  tokenIn,
+            assetOut: tokenOut,
+            amount:   amountIn,
+            userData: ""
+        });
+
+        IBalancerVault.FundManagement memory funds = IBalancerVault.FundManagement({
+            sender:              address(this),
+            fromInternalBalance: false,
+            recipient:           payable(address(this)),
+            toInternalBalance:   false
+        });
+
+        amountOut = IBalancerVault(vault).swap(
+            singleSwap,
+            funds,
+            0,              // limit: accept any amount out
+            block.timestamp + 300
+        );
     }
 
     /// @notice Algebra swap callback - called by pool during swap to request input tokens
@@ -551,14 +806,28 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
         require(aavePool != address(0) && msg.sender == aavePool, "not aave pool");
         require(allowedFlashAssets[asset], "asset not allowed");
 
-        // Execute swaps using same calldata format as fallback
-        _execute(params);
-
         uint256 repayAmount = amount + premium;
-        // Approve the Aave pool (msg.sender) to pull the repayment.
-        // Reset allowance to 0 first to satisfy USDT-style tokens.
-        IERC20(asset).safeApprove(msg.sender, 0);
-        IERC20(asset).safeApprove(msg.sender, repayAmount);
+
+        if (_aaveLiquidationPending) {
+            // ── Liquidation path ─────────────────────────────────────────────
+            // Clear guards before any external interaction.
+            _aaveLiquidationPending  = false;
+            address swapVault        = _pendingAaveLiqSwapVault;
+            _pendingAaveLiqSwapVault = address(0);
+
+            LiquidationParams memory p = abi.decode(params, (LiquidationParams));
+            _executeLiquidationCore(swapVault, p);
+
+            // Repay AAVE: principal + premium (premium = amount × 0.0005 = 0.05%).
+            IERC20(asset).safeApprove(msg.sender, 0);
+            IERC20(asset).safeApprove(msg.sender, repayAmount);
+        } else {
+            // ── Arb path (existing behaviour) ────────────────────────────────
+            _execute(params);
+
+            IERC20(asset).safeApprove(msg.sender, 0);
+            IERC20(asset).safeApprove(msg.sender, repayAmount);
+        }
         return true;
     }
 
