@@ -40,13 +40,7 @@ pub struct SearcherConfig {
     /// Only affects the ArbPath.gas_estimate field pushed downstream;
     /// the simulator re-measures actual gas via REVM.
     pub searcher_gas_estimate: u64,
-    /// Maximum number of paths to forward to the simulator per evaluation.
-    /// Paths are sorted by estimated profit (descending) so only the most
-    /// promising candidates reach REVM.  Keeping this small ensures simulations
-    /// complete within a few BSC blocks and arbs reach TxSender while fresh.
-    /// Rule-of-thumb: (block_time_ms / revm_ms_per_path) * num_simulators.
-    /// BSC ≈ 500ms / ~180ms × 8 workers ≈ 22 per block; 128 covers ~3 blocks.
-    pub max_sim_paths: usize,
+
 }
 
 impl Default for SearcherConfig {
@@ -54,10 +48,6 @@ impl Default for SearcherConfig {
         Self {
             max_paths_per_block: 50_000,
             searcher_gas_estimate: 250_000,
-            // BSC ~400ms blocks, REVM ~185ms/path, 8 workers → 8*(400/185)=17 paths/block
-            // sustainable throughput.  Top-16 sorted by estimated profit ensures
-            // simulators finish within one block and arbs reach TxSender fresh.
-            max_sim_paths: 16,
         }
     }
 }
@@ -71,6 +61,9 @@ pub struct SearcherWorker {
     pub estimator: Arc<RwLock<RateEstimator>>,
     pub gas_station: Arc<GasStation>,
     pub rate_cache: Arc<PathRateCache>,
+    /// Shared atomic so searcher can publish latest-block to simulator workers,
+    /// enabling them to skip stale queued paths without waiting for fresh arb items.
+    pub shared_latest_block: Arc<std::sync::atomic::AtomicU64>,
     /// All known paths, indexed by the pools they contain.
     /// pool_address → [path_indices]
     pub pool_to_paths: HashMap<Address, Vec<usize>>,
@@ -88,6 +81,7 @@ impl SearcherWorker {
         estimator: Arc<RwLock<RateEstimator>>,
         gas_station: Arc<GasStation>,
         rate_cache: Arc<PathRateCache>,
+        shared_latest_block: Arc<std::sync::atomic::AtomicU64>,
     ) -> Self {
         Self {
             rpc_url,
@@ -96,6 +90,7 @@ impl SearcherWorker {
             estimator,
             gas_station,
             rate_cache,
+            shared_latest_block,
             pool_to_paths: HashMap::new(),
             all_paths: Vec::new(),
             pool_meta: HashMap::new(),
@@ -195,6 +190,14 @@ impl SearcherWorker {
                 );
             }
 
+            // Publish the block we're about to evaluate to the shared atomic.
+            // Simulator workers check this on every path — stale queued items from
+            // earlier blocks get skipped instantly without expensive REVM work.
+            self.shared_latest_block.fetch_max(
+                final_block,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+
             let merged_vec: Vec<Address> = merged_pools.into_iter().collect();
 
             // 2. Collect affected path indices (deduped) from merged pool set
@@ -249,27 +252,31 @@ impl SearcherWorker {
                 continue 'outer;
             }
 
-            // 4. Send the top-N profitable paths (sorted by estimated profit).
-            // Capping here ensures simulators finish within a few blocks so arbs
-            // reach TxSender while still fresh.  Results are already sorted DESC.
-            let cap = self.config.max_sim_paths;
-            let capped = results.len().min(cap);
-            if results.len() > cap {
-                log::info!(
-                    "[Searcher] Block {final_block}: capping simulator send {}->{cap} (top profit paths)",
-                    results.len()
-                );
-            }
+            // 4. Push profitable paths to simulators (non-blocking).
+            // Results are already sorted by estimated profit DESC, so we feed the
+            // best candidates first.  Use try_send() to avoid blocking the searcher
+            // when the simulator channel is full — the paths we can't fit will be
+            // re-evaluated on the next block with fresh state anyway.
             let mut sent = 0usize;
-            for arb in results.into_iter().take(capped) {
-                if arb_tx.send(arb).await.is_err() {
-                    log::error!("[Searcher] Channel closed");
-                    return;
+            let mut dropped = 0usize;
+            for arb in results.into_iter() {
+                match arb_tx.try_send(arb) {
+                    Ok(()) => sent += 1,
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        dropped += 1;
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        log::error!("[Searcher] Channel closed");
+                        return;
+                    }
                 }
-                sent += 1;
             }
 
-            if sent > 0 {
+            if dropped > 0 {
+                log::info!(
+                    "[Searcher] Block {final_block}: sent {sent} arb paths, dropped {dropped} (channel full)"
+                );
+            } else {
                 log::info!("[Searcher] Block {final_block}: sent {sent} arb paths");
             }
         }

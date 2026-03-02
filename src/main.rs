@@ -4,7 +4,7 @@ use log::info;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use tokio::task::JoinSet;
 
-use rust::block_stream::stream_new_blocks;
+use rust::block_stream::stream_blocks_gossip;
 use rust::config::Config;
 use rust::filter_revm::{
     CombinedFilter,
@@ -112,8 +112,7 @@ async fn main() -> Result<()> {
         max_paths_per_block: config.execution.max_paths_per_block,
         num_simulators: config.execution.num_simulators,
         searcher_gas_estimate: config.execution.searcher_gas_estimate,
-        max_sim_paths: config.execution.max_sim_paths,
-        sim_stale_blocks: config.execution.sim_stale_blocks,
+
         max_stale_blocks: config.execution.max_stale_blocks,
         strike_threshold: config.execution.strike_threshold,
         gas_params: config.gas_params.clone(),
@@ -451,26 +450,19 @@ async fn main() -> Result<()> {
     }
     // ── Start the alloy + revm pipeline ──────────────────────────────────────
     let pipeline  = start_pipeline(pipeline_config, paths, pool_metas, pools);
-    let block_tx  = pipeline.block_tx.clone();
     info!("Pipeline started (dry_run={dry_run}, chain_id={})", config.chain.chain_id);
 
-    // ── Stream new blocks from the primary WS endpoint ───────────────────────
+    // ── Stream new blocks from all WS endpoints (gossip dedup) ─────────────
     let mut set = JoinSet::new();
-    let ws_url  = config.chain.wss_url.clone();
+    let mut all_ws_urls = vec![config.chain.wss_url.clone()];
+    all_ws_urls.extend(config.chain.wss_urls.iter().cloned());
+    // Remove empty strings (unconfigured entries)
+    all_ws_urls.retain(|u| !u.is_empty());
+    info!("Gossip: {} WS endpoint(s) configured", all_ws_urls.len());
+    let gossip_tx = pipeline.block_tx.clone();
     set.spawn(async move {
-        stream_new_blocks(ws_url, block_tx).await;
+        stream_blocks_gossip(all_ws_urls, gossip_tx).await;
     });
-
-    // Fallback WS URLs: reconnect on failure (basic; add exponential backoff for production)
-    let fallback_urls = config.chain.wss_urls.clone();
-    for fb_url in fallback_urls {
-        let fb_tx = pipeline.block_tx.clone();
-        set.spawn(async move {
-            // Small delay so the primary connection has time to establish first
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-            stream_new_blocks(fb_url, fb_tx).await;
-        });
-    }
 
     info!("Arbitrage engine running — listening for blocks");
 

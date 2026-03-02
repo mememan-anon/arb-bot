@@ -45,11 +45,10 @@ pub struct SimulatorConfig {
     pub flash_loan_provider: String,
     /// RPC URL used to query chain head for stale-block skipping during catch-up.
     pub rpc_url: String,
-    /// How many blocks behind the latest-seen block a path may be before it is
-    /// discarded as stale without simulation.  1 means: skip anything
-    ///  from block N-2 or older when a path from block N has been received.
-    /// BSC ≈ 400ms blocks → 1 is tight and correct; increase for slower chains.
-    pub sim_stale_blocks: u64,
+    /// Stale-block tolerance: paths from blocks older than
+    /// (latest_seen - max_stale_blocks) are discarded without simulation.
+    /// Shared with TxSender stale check — tune once in TOML.
+    pub max_stale_blocks: u64,
 }
 
 impl Default for SimulatorConfig {
@@ -63,7 +62,7 @@ impl Default for SimulatorConfig {
             flash_loan_fee_bps: 0,  // overridden per-chain in start_pipeline
             flash_loan_provider: "AaveV3".to_string(),
             rpc_url: String::new(),
-            sim_stale_blocks: 1,
+            max_stale_blocks: 3,
         }
     }
 }
@@ -157,7 +156,7 @@ impl SimulatorWorker {
         let mut block_stale: u64 = 0;
 
         // Track chain head for absolute stale-block skipping during catch-up.
-        let max_sim_stale_blocks = self.config.sim_stale_blocks;
+        let stale_limit = self.config.max_stale_blocks;
         let mut last_head_check = std::time::Instant::now();
         let mut cached_head: u64 = self.get_chain_head().await.unwrap_or(0);
         log::info!("[Simulator-{worker_id}] Chain head at startup: {cached_head}");
@@ -202,14 +201,14 @@ impl SimulatorWorker {
 
             // Absolute stale check — skip entire blocks that are behind chain head.
             // This prevents the simulator from wasting minutes on catch-up blocks.
-            if cached_head > 0 && arb.block_number + max_sim_stale_blocks < cached_head {
+            if cached_head > 0 && arb.block_number + stale_limit < cached_head {
                 block_stale += 1;
                 continue;
             }
 
             // Skip stale paths (from blocks too far behind the newest seen by any worker)
             let latest = latest_block.load(Ordering::Relaxed);
-            if arb.block_number + max_sim_stale_blocks < latest {
+            if arb.block_number + stale_limit < latest {
                 block_stale += 1;
                 continue;
             }
@@ -329,7 +328,7 @@ impl SimulatorWorker {
             }
             None => {
                 log::debug!(
-                    "[SIM] Path {:x}: quoter returned None (no bytecode or revert)",
+                    "[SIM] Path {:x}: quoter returned None (swap reverted or OOG)",
                     arb.path.hash
                 );
             }
@@ -351,18 +350,11 @@ impl SimulatorWorker {
         let probe_output = self.quoter.quote_with_db(&mut sim_db, &arb.path, probe_input);
         match probe_output {
             None => {
-                log::debug!("[Simulator] quote_path returned None for {:x} (bytecode missing or revert)", arb.path.hash);
+                log::debug!("[Simulator] quote_path returned None for {:x} (swap reverted or OOG)", arb.path.hash);
                 return None;
             }
             Some(out) if out <= probe_input => {
                 log::debug!("[Simulator] path {:x} not viable: min_input={} gives out={}", arb.path.hash, probe_input, out);
-                return None;
-            }
-            Some(out) if out > probe_input * U256::from(3u64) / U256::from(2u64) => {
-                // Sanity: output > 1.5× input in an arb cycle is almost certainly bogus.
-                // Real DEX arbs return at most 1-5%. The V3 analytical math can
-                // overestimate for low-liquidity pools where swaps cross ticks.
-                log::debug!("[Simulator] path {:x} bogus output: in={} out={} (>1.5x, skipping)", arb.path.hash, probe_input, out);
                 return None;
             }
             _ => {} // profitable at min_input, proceed to optimize
@@ -388,12 +380,6 @@ impl SimulatorWorker {
         if best_output <= best_input {
             log::debug!("[Simulator] path {:x} not profitable after optimize: in={} out={}", arb.path.hash, best_input, best_output);
             return None; // not profitable
-        }
-
-        // Sanity check: reject outputs that are unreasonably large (V3 math artifact)
-        if best_output > best_input * U256::from(3u64) / U256::from(2u64) {
-            log::debug!("[Simulator] path {:x} bogus optimized output: in={} out={} (>1.5x)", arb.path.hash, best_input, best_output);
-            return None;
         }
 
         let gross_profit = best_output - best_input;

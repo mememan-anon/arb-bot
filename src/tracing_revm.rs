@@ -96,47 +96,71 @@ pub async fn trace_block_diffs(
         .build()
         .map_err(|e| format!("Client build: {e}"))?;
 
-    // Query block N-1 for logs (guaranteed to be indexed).
-    // But fetch STORAGE at "latest" so our state reflects the actual chain head,
-    // not the 1-block-stale snapshot that causes phantom arbs.
-    let query_block = block_number.saturating_sub(1);
-    let log_block_hex = format!("0x{:x}", query_block);
+    // Fetch STORAGE at "latest" so our state reflects the actual chain head,
+    // not a 1-block-stale snapshot that causes phantom arbs.
     let storage_block_tag = "latest".to_string();
 
     // ── Step 1: eth_getLogs with topic filter ───────────────────────────────
-    // Query from block N-1 to "latest" so we catch events in both the
-    // guaranteed-indexed block AND the current head.
-    let logs_body = serde_json::json!({
-        "jsonrpc": "2.0",
-        "method": "eth_getLogs",
-        "params": [{
-            "fromBlock": &log_block_hex,
-            "toBlock":   "latest",
-            "topics": [[V3_SWAP_TOPIC, V2_SYNC_U112_TOPIC, V2_SYNC_U256_TOPIC]]
-        }],
-        "id": 1
-    });
+    // Pin both fromBlock and toBlock to the exact block number.
+    // Using "latest" as toBlock caused "invalid block range params" when the
+    // HTTP RPC lagged behind the WS gossip endpoint (latest < block_number-1).
+    let log_block_hex = format!("0x{:x}", block_number);
 
-    let resp = client
-        .post(rpc_url)
-        .json(&logs_body)
-        .send()
-        .await
-        .map_err(|e| format!("eth_getLogs send: {e}"))?;
+    let logs_arr = {
+        let logs_body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "eth_getLogs",
+            "params": [{
+                "fromBlock": &log_block_hex,
+                "toBlock":   &log_block_hex,
+                "topics": [[V3_SWAP_TOPIC, V2_SYNC_U112_TOPIC, V2_SYNC_U256_TOPIC]]
+            }],
+            "id": 1
+        });
 
-    let logs_json: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("eth_getLogs json: {e}"))?;
+        // Retry with increasing delays — HTTP RPC may lag behind WS gossip.
+        let retry_delays_ms: &[u64] = &[0, 250, 500];
+        let mut last_err = String::new();
+        let mut result_arr: Option<Vec<serde_json::Value>> = None;
 
-    let logs_arr = match logs_json.get("result").and_then(|r| r.as_array()) {
-        Some(a) => a,
-        None => {
-            let err = logs_json
-                .get("error")
-                .map(|e| e.to_string())
-                .unwrap_or_default();
-            return Err(format!("eth_getLogs error: {err}"));
+        for (attempt, &delay_ms) in retry_delays_ms.iter().enumerate() {
+            if delay_ms > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            }
+
+            let resp = match client.post(rpc_url).json(&logs_body).send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    last_err = format!("eth_getLogs send attempt {}: {e}", attempt);
+                    continue;
+                }
+            };
+
+            let json: serde_json::Value = match resp.json().await {
+                Ok(j) => j,
+                Err(e) => {
+                    last_err = format!("eth_getLogs json attempt {}: {e}", attempt);
+                    continue;
+                }
+            };
+
+            match json.get("result").and_then(|r| r.as_array()).cloned() {
+                Some(a) => {
+                    result_arr = Some(a);
+                    break;
+                }
+                None => {
+                    last_err = json
+                        .get("error")
+                        .map(|e| e.to_string())
+                        .unwrap_or_else(|| "no result".into());
+                }
+            }
+        }
+
+        match result_arr {
+            Some(a) => a,
+            None => return Err(format!("eth_getLogs error: {last_err}")),
         }
     };
 

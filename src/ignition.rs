@@ -89,11 +89,8 @@ pub struct PipelineConfig {
     pub num_simulators: usize,
     /// Rough gas estimate used by the searcher for candidate pre-screening.
     pub searcher_gas_estimate: u64,
-    /// Maximum paths forwarded to simulators per evaluation pass (sorted by estimated profit).
-    pub max_sim_paths: usize,
-    /// How many blocks behind latest-seen to tolerate in simulator before discarding.
-    pub sim_stale_blocks: u64,
-    /// Max allowed TxSender stale lag in blocks.
+
+    /// Stale-block cutoff for both simulators and tx-sender (blocks behind chain head).
     pub max_stale_blocks: u64,
     /// Unified strike threshold for path/token blacklisting.
     pub strike_threshold: u32,
@@ -146,8 +143,7 @@ impl Default for PipelineConfig {
             max_paths_per_block: 50_000,
             num_simulators: 4,
             searcher_gas_estimate: 250_000,
-            max_sim_paths: 16,
-            sim_stale_blocks: 1,
+
             max_stale_blocks: 3,
             strike_threshold: 3,
             gas_params: GasParamsConfig::default(),
@@ -298,18 +294,24 @@ pub fn start_pipeline(
         market_state.run(block_rx_1, pools_tx).await;
     }));
 
+    // Shared latest-block atomic across searcher + all simulator workers.
+    // The searcher publishes the block it's evaluating; simulators check it
+    // on every path to skip stale queued items without waiting for fresh arb items.
+    let shared_latest_block = Arc::new(std::sync::atomic::AtomicU64::new(0));
+
     // ── Worker 2: Searcher ──────────────────────────────────────────────────
     let mut searcher = SearcherWorker::new(
         config.rpc_url.clone(),
         SearcherConfig {
             max_paths_per_block: config.max_paths_per_block,
             searcher_gas_estimate: config.searcher_gas_estimate,
-            max_sim_paths: config.max_sim_paths,
+
         },
         state_db.clone(),
         estimator.clone(),
         gas_station.clone(),
         rate_cache.clone(),
+        shared_latest_block.clone(),
     );
     searcher.register_paths(paths);
     searcher.register_pool_meta(pool_metas);
@@ -331,7 +333,7 @@ pub fn start_pipeline(
         flash_loan_fee_bps: if config.use_flashloan { config.flash_loan_fee_bps } else { 0 },
         flash_loan_provider: config.flash_loan_provider.clone(),
         rpc_url: config.rpc_url.clone(),
-        sim_stale_blocks: config.sim_stale_blocks,
+        max_stale_blocks: config.max_stale_blocks,
     };
 
     // Shared blacklist across all workers so one worker's revert info benefits others.
@@ -381,12 +383,6 @@ pub fn start_pipeline(
     // Start tokens that should NEVER be blacklisted (WBNB, USDT, etc.)
     let mut start_tokens: HashSet<Address> = config.token_price_pools.keys().cloned().collect();
     start_tokens.insert(config.native_token);
-
-    // Shared latest-block atomic across all simulator workers so any worker that
-    // receives a newer-block path immediately marks older-block paths as stale for
-    // every other worker — prevents 8 workers all burning REVM time on the same
-    // stale block.
-    let shared_latest_block = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
     for worker_id in 0..num_sims {
         let simulator = SimulatorWorker {

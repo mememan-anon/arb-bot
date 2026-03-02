@@ -423,9 +423,15 @@ const FILTER_ACCOUNT: Address = address!("00000000000000000000000000000000000000
 /// Absurdly large token balance injected into every token for filter tests.
 const TOKEN_LOTS: U256 = U256::from_limbs([u64::MAX, u64::MAX, 0, 0]);
 /// Gas limit for each filter EVM call.
-const FILTER_GAS: u64 = 800_000;
-/// Test swap amount: 1e15 units (0.001 WETH-equivalent), matching BaseBuster.
-const TEST_AMOUNT: U256 = U256::from_limbs([1_000_000_000_000_000u64, 0, 0, 0]);
+const FILTER_GAS: u64 = 450_000;
+/// Test swap amounts: try from largest to smallest so low-liquidity pools still
+/// pass. 1e15 → 1e12 → 1e9 → 1e6.
+const TEST_AMOUNTS: [U256; 4] = [
+    U256::from_limbs([1_000_000_000_000_000u64, 0, 0, 0]), // 1e15
+    U256::from_limbs([1_000_000_000_000u64, 0, 0, 0]),     // 1e12
+    U256::from_limbs([1_000_000_000u64, 0, 0, 0]),         // 1e9
+    U256::from_limbs([1_000_000u64, 0, 0, 0]),             // 1e6
+];
 
 /// Which router ABI variant to use for a given pool.
 #[derive(Clone, Copy)]
@@ -768,34 +774,51 @@ fn test_pool_filter_reason(
         return Err("approve_token1_failed");
     }
 
-    // Swap A → B
-    let cd_ab = build_swap_calldata(pool, variant, FILTER_ACCOUNT, TEST_AMOUNT, true);
-    let out_ab = match evm_call_commit(db, FILTER_ACCOUNT, router, cd_ab, U256::ZERO) {
-        Some(o) => o,
-        None => return Err("swap_ab_failed"),
-    };
-    let amt_b = decode_swap_output(&out_ab, variant);
-    if amt_b.is_zero() {
-        return Err("swap_ab_zero_output");
+    // Try progressively smaller swap amounts so low-liquidity pools aren't
+    // falsely rejected when the large amount exceeds reserves.
+    let mut last_ab_err: &str = "swap_ab_failed";
+    for test_amount in TEST_AMOUNTS {
+        // Re-inject balances each iteration (prior reverted swaps didn't
+        // consume them, but successful ones did).
+        db.inject_slot(pool.token0, s0, TOKEN_LOTS);
+        db.inject_slot(pool.token1, s1, TOKEN_LOTS);
+
+        // Swap A → B
+        let cd_ab = build_swap_calldata(pool, variant, FILTER_ACCOUNT, test_amount, true);
+        let out_ab = match evm_call_commit(db, FILTER_ACCOUNT, router, cd_ab, U256::ZERO) {
+            Some(o) => o,
+            None => {
+                last_ab_err = "swap_ab_failed";
+                continue; // try smaller amount
+            }
+        };
+        let amt_b = decode_swap_output(&out_ab, variant);
+        if amt_b.is_zero() {
+            last_ab_err = "swap_ab_zero_output";
+            continue; // try smaller amount
+        }
+
+        // Swap B → A
+        let cd_ba = build_swap_calldata(pool, variant, FILTER_ACCOUNT, amt_b, false);
+        let out_ba = match evm_call_commit(db, FILTER_ACCOUNT, router, cd_ba, U256::ZERO) {
+            Some(o) => o,
+            None => return Err("swap_ba_failed"),
+        };
+        let amt_a_back = decode_swap_output(&out_ba, variant);
+
+        // Roundtrip check: at least 95% back.
+        let lower = test_amount
+            .saturating_mul(U256::from(95u64))
+            / U256::from(100u64);
+        if amt_a_back >= lower {
+            return Ok(());
+        } else {
+            return Err("roundtrip_below_95pct");
+        }
     }
 
-    // Swap B → A
-    let cd_ba = build_swap_calldata(pool, variant, FILTER_ACCOUNT, amt_b, false);
-    let out_ba = match evm_call_commit(db, FILTER_ACCOUNT, router, cd_ba, U256::ZERO) {
-        Some(o) => o,
-        None => return Err("swap_ba_failed"),
-    };
-    let amt_a_back = decode_swap_output(&out_ba, variant);
-
-    // Roundtrip check: at least 95% back.
-    let lower = TEST_AMOUNT
-        .saturating_mul(U256::from(95u64))
-        / U256::from(100u64);
-    if amt_a_back >= lower {
-        Ok(())
-    } else {
-        Err("roundtrip_below_95pct")
-    }
+    // Every amount failed A→B
+    Err(last_ab_err)
 }
 
 /// Storage layout variant for ERC20 balance mapping.
@@ -841,110 +864,115 @@ fn compute_slot(holder: Address, slot_idx: u64, layout: SlotLayout) -> U256 {
     }
 }
 
-/// Fetch `balanceOf(holder)` from `token` via eth_call.
-async fn rpc_balance_of(
-    token: Address,
-    holder: Address,
-    client: &reqwest::Client,
-    rpc_url: &str,
-) -> U256 {
-    let calldata_hex = format!(
-        "0x70a08231000000000000000000000000{}",
-        hex::encode(holder.as_slice())
-    );
-    let body = serde_json::json!({
-        "jsonrpc": "2.0",
-        "method": "eth_call",
-        "params": [{"to": format!("{token:?}"), "data": calldata_hex}, "latest"],
-        "id": 1
-    });
-    match client.post(rpc_url).json(&body).send().await {
-        Ok(resp) => {
-            if let Ok(json) = resp.json::<serde_json::Value>().await {
-                if let Some(s) = json.get("result").and_then(|v| v.as_str()) {
-                    let s = s.trim_start_matches("0x");
-                    if s.len() >= 64 {
-                        let padded = format!("{:0>64}", &s[s.len().saturating_sub(64)..]);
-                        if let Ok(bytes) = hex::decode(&padded) {
-                            if bytes.len() == 32 {
-                                let mut arr = [0u8; 32];
-                                arr.copy_from_slice(&bytes);
-                                return U256::from_be_bytes(arr);
-                            }
-                        }
-                    }
-                }
-            }
-            U256::ZERO
-        }
-        Err(_) => U256::ZERO,
-    }
-}
-
-/// Fetch `eth_getStorageAt(token, slot, "latest")`.
-async fn rpc_get_storage_at(
-    token: Address,
-    slot: U256,
-    client: &reqwest::Client,
-    rpc_url: &str,
-) -> U256 {
-    let slot_hex = format!("0x{}", hex::encode(slot.to_be_bytes::<32>()));
-    let body = serde_json::json!({
-        "jsonrpc": "2.0",
-        "method": "eth_getStorageAt",
-        "params": [format!("{token:?}"), slot_hex, "latest"],
-        "id": 1
-    });
-    match client.post(rpc_url).json(&body).send().await {
-        Ok(resp) => {
-            if let Ok(json) = resp.json::<serde_json::Value>().await {
-                if let Some(s) = json.get("result").and_then(|v| v.as_str()) {
-                    let s = s.trim_start_matches("0x");
-                    let padded = format!("{:0>64}", s);
-                    if let Ok(bytes) = hex::decode(&padded) {
-                        if bytes.len() == 32 {
-                            let mut arr = [0u8; 32];
-                            arr.copy_from_slice(&bytes);
-                            return U256::from_be_bytes(arr);
-                        }
-                    }
-                }
-            }
-            U256::ZERO
-        }
-        Err(_) => U256::ZERO,
-    }
-}
-
 /// Try to find the balance storage slot for `token` using `holder` as the
 /// reference address (a pool that holds the token).
 ///
 /// Tests both Solidity (`keccak256(holder, slot_idx)`) and Vyper
 /// (`keccak256(slot_idx, holder)`) layouts for `slot_idx` in 0..24,
 /// verifying that the stored value matches `balanceOf(holder)`.
+///
+/// Uses a single JSON-RPC batch request (1 balanceOf + 48 getStorageAt)
+/// instead of 49 individual calls, cutting per-token latency by ~49x.
 async fn find_balance_slot(
     token: Address,
     holder: Address,
     client: &reqwest::Client,
     rpc_url: &str,
 ) -> Option<(u64, SlotLayout)> {
-    let actual_balance = rpc_balance_of(token, holder, client, rpc_url).await;
+    // ── Build a single JSON-RPC batch: 1 balanceOf + 48 getStorageAt ──
+    // This turns 49 sequential HTTP round-trips into 1 batch request.
+    let token_hex = format!("{token:?}");
+    let balance_calldata = format!(
+        "0x70a08231000000000000000000000000{}",
+        hex::encode(holder.as_slice())
+    );
+
+    // id 0 = balanceOf; ids 1..48 = getStorageAt for (slot_idx, layout) pairs
+    let mut batch = Vec::with_capacity(49);
+    batch.push(serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "eth_call",
+        "params": [{"to": &token_hex, "data": &balance_calldata}, "latest"],
+        "id": 0
+    }));
+
+    // Pre-compute all candidate slots and their batch ids
+    struct SlotProbe { id: u64, slot_idx: u64, layout: SlotLayout }
+    let mut probes: Vec<SlotProbe> = Vec::with_capacity(48);
+    let mut next_id = 1u64;
+    for slot_idx in 0..24u64 {
+        // Solidity
+        let sol = mapping_slot(holder, slot_idx);
+        let sol_hex = format!("0x{}", hex::encode(sol.to_be_bytes::<32>()));
+        batch.push(serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "eth_getStorageAt",
+            "params": [&token_hex, &sol_hex, "latest"],
+            "id": next_id
+        }));
+        probes.push(SlotProbe { id: next_id, slot_idx, layout: SlotLayout::Solidity });
+        next_id += 1;
+
+        // Vyper
+        let vyp = mapping_slot_vyper(holder, slot_idx);
+        let vyp_hex = format!("0x{}", hex::encode(vyp.to_be_bytes::<32>()));
+        batch.push(serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "eth_getStorageAt",
+            "params": [&token_hex, &vyp_hex, "latest"],
+            "id": next_id
+        }));
+        probes.push(SlotProbe { id: next_id, slot_idx, layout: SlotLayout::Vyper });
+        next_id += 1;
+    }
+
+    // Send the batch as a JSON array
+    let resp = match client.post(rpc_url).json(&batch).send().await {
+        Ok(r) => r,
+        Err(_) => return None,
+    };
+    let results: Vec<serde_json::Value> = match resp.json().await {
+        Ok(v) => v,
+        Err(_) => return None,
+    };
+
+    // Index responses by id for O(1) lookup
+    let mut by_id: HashMap<u64, &serde_json::Value> = HashMap::with_capacity(results.len());
+    for r in &results {
+        if let Some(id) = r.get("id").and_then(|v| v.as_u64()) {
+            by_id.insert(id, r);
+        }
+    }
+
+    // Helper to parse a hex result string → U256
+    let parse_u256 = |v: &serde_json::Value| -> U256 {
+        if let Some(s) = v.get("result").and_then(|r| r.as_str()) {
+            let s = s.trim_start_matches("0x");
+            let padded = format!("{:0>64}", s);
+            if let Ok(bytes) = hex::decode(&padded) {
+                if bytes.len() == 32 {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&bytes);
+                    return U256::from_be_bytes(arr);
+                }
+            }
+        }
+        U256::ZERO
+    };
+
+    // Extract actual balance from id=0
+    let actual_balance = by_id.get(&0).map(|v| parse_u256(v)).unwrap_or(U256::ZERO);
     if actual_balance.is_zero() {
         return None;
     }
 
-    for slot_idx in 0..24u64 {
-        // Try Solidity-style first (most common)
-        let candidate_sol = mapping_slot(holder, slot_idx);
-        let stored = rpc_get_storage_at(token, candidate_sol, client, rpc_url).await;
-        if stored == actual_balance {
-            return Some((slot_idx, SlotLayout::Solidity));
-        }
-        // Try Vyper-style (reversed argument order)
-        let candidate_vyp = mapping_slot_vyper(holder, slot_idx);
-        let stored = rpc_get_storage_at(token, candidate_vyp, client, rpc_url).await;
-        if stored == actual_balance {
-            return Some((slot_idx, SlotLayout::Vyper));
+    // Check probes in order (Solidity slots first per index, matching original priority)
+    for probe in &probes {
+        if let Some(v) = by_id.get(&probe.id) {
+            let stored = parse_u256(v);
+            if stored == actual_balance {
+                return Some((probe.slot_idx, probe.layout));
+            }
         }
     }
     None
@@ -1161,29 +1189,73 @@ pub fn filter_pools_by_swap(
     let testable_count = testable_pools.len();
     let t0 = std::time::Instant::now();
 
-    // ── Sequential pool testing (parallel with Mutex causes contention) ──
+    // ── Multi-threaded pool testing via rayon ──────────────────────────────
+    // Each worker gets its own BlockStateDB clone (all share pre-fetched
+    // bytecodes + storage from the parent db). REVM `transact_commit` needs
+    // `&mut`, so independent clones avoid any Mutex contention.
+    let num_workers = rayon::current_num_threads().max(1);
     log::info!(
-        "[SwapFilter] Starting pool test: {} testable pools, {} untestable (pass-through)",
-        testable_count, untestable_pools.len()
+        "[SwapFilter] Starting parallel pool test: {} testable pools across {} threads, {} untestable (pass-through)",
+        testable_count, num_workers, untestable_pools.len()
     );
 
+    // Wrap shared read-only data in Arc for cheap sharing into rayon tasks
+    let slot_map_ref = &*slot_map;
+    let registry_ref = router_registry;
+
+    let progress = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let passed_atomic = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let toxic_atomic = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    // Each pool result: Ok(pool) = safe/untestable, Err(pool, reason) = failed
+    let results: Vec<Result<RawPool, (RawPool, &'static str)>> = {
+        use rayon::prelude::*;
+        testable_pools
+            .into_par_iter()
+            .map_init(
+                // init: called once per rayon worker thread → fresh DB clone
+                || db.clone(),
+                |thread_db, pool| {
+                    let done = progress.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                    if done % 500 == 0 || done == testable_count {
+                        log::info!(
+                            "[SwapFilter] Progress: {}/{} pools tested ({} passed, {} toxic) in {:.1}s",
+                            done,
+                            testable_count,
+                            passed_atomic.load(std::sync::atomic::Ordering::Relaxed),
+                            toxic_atomic.load(std::sync::atomic::Ordering::Relaxed),
+                            t0.elapsed().as_secs_f32()
+                        );
+                    }
+                    match test_pool_filter_reason(thread_db, &pool, slot_map_ref, registry_ref) {
+                        Ok(()) => {
+                            passed_atomic.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            Ok(pool)
+                        }
+                        Err(reason) => {
+                            if UNTESTABLE_REASONS.contains(&reason) {
+                                passed_atomic.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            } else {
+                                toxic_atomic.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            Err((pool, reason))
+                        }
+                    }
+                },
+            )
+            .collect()
+    };
+
+    // Merge results
     let mut filtered = Vec::with_capacity(before);
     let mut fail_reasons: HashMap<&'static str, usize> = HashMap::new();
     let mut untestable_count = 0usize;
     let mut toxic_count = 0usize;
-    let mut tested = 0usize;
 
-    for pool in testable_pools {
-        tested += 1;
-        if tested % 500 == 0 || tested == testable_count {
-            log::info!(
-                "[SwapFilter] Progress: {}/{} pools tested ({} passed, {} toxic) in {:.1}s",
-                tested, testable_count, filtered.len(), toxic_count, t0.elapsed().as_secs_f32()
-            );
-        }
-        match test_pool_filter_reason(&mut db, &pool, slot_map, router_registry) {
-            Ok(()) => filtered.push(pool),
-            Err(reason) => {
+    for result in results {
+        match result {
+            Ok(pool) => filtered.push(pool),
+            Err((pool, reason)) => {
                 *fail_reasons.entry(reason).or_insert(0) += 1;
                 if UNTESTABLE_REASONS.contains(&reason) {
                     untestable_count += 1;

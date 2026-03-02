@@ -108,6 +108,7 @@ pub struct BlockStateAccount {
 
 /// In-memory REVM database that mirrors on-chain state for tracked pools.
 /// Unknown state is fetched lazily from the HTTP provider.
+#[derive(Clone)]
 pub struct BlockStateDB {
     /// Account states keyed by address.
     pub accounts: HashMap<Address, BlockStateAccount>,

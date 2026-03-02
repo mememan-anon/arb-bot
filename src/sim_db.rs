@@ -19,11 +19,6 @@ pub struct SimDb {
     accounts: HashMap<Address, SimAccount>,
     rpc_url: String,
     client: reqwest::Client,
-    /// When true, cache misses return defaults instead of RPC calls.
-    /// Makes simulation ~1000x faster for V3 paths (no tick-data RPC).
-    /// Swaps that don't cross tick boundaries still compute correctly
-    /// because slot0 (sqrtPriceX96) and liquidity are already prefetched.
-    pub fast_mode: bool,
 }
 
 struct SimAccount {
@@ -51,7 +46,6 @@ impl SimDb {
             accounts,
             rpc_url: db.rpc_url.clone(),
             client: reqwest::Client::new(),
-            fast_mode: true, // fast mode: cache misses return defaults (all pool state is prefetched)
         }
     }
 
@@ -202,10 +196,6 @@ impl Database for SimDb {
         if let Some(acct) = self.accounts.get(&address) {
             // Account exists in snapshot — check if code needs fetching
             if acct.info.code.is_none() && acct.info.code_hash == KECCAK_EMPTY {
-                if self.fast_mode {
-                    // Fast mode: return stub (no code) — REVM will treat as EOA
-                    return Ok(Some(acct.info.clone()));
-                }
                 // Might be a codeless stub from update_slot; fetch real code
                 let full_info = self.fetch_account_rpc(address);
                 let entry = self.accounts.get_mut(&address).unwrap();
@@ -218,10 +208,6 @@ impl Database for SimDb {
                 Ok(Some(acct.info.clone()))
             }
         } else {
-            if self.fast_mode {
-                // Fast mode: return empty account (no RPC)
-                return Ok(Some(AccountInfo::default()));
-            }
             // Not in snapshot — fetch from RPC and cache locally
             let info = self.fetch_account_rpc(address);
             self.accounts.insert(address, SimAccount {
@@ -253,13 +239,6 @@ impl Database for SimDb {
             if let Some(&val) = acct.storage.get(&index) {
                 return Ok(val);
             }
-        }
-        if self.fast_mode {
-            // Fast mode: return zero for uncached slots (no RPC).
-            // V3 swaps within the current tick range still work because
-            // slot0 and liquidity are prefetched. Missing tick data means
-            // tick crossings return 0, correctly marking the path as non-viable.
-            return Ok(U256::ZERO);
         }
         // Fetch from RPC and cache
         let value = self.fetch_storage_rpc(address, index);

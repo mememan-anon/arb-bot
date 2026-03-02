@@ -5,7 +5,18 @@ name = "bsc"
 chain_id = 56
 https_url = ""
 wss_url = ""
-wss_urls = []
+wss_urls = [
+  "ws://localhost:8546",
+  "wss://lb.drpc.live/bsc/AoBzi9hc10ZYuXKhr5g4Uz-ksgFoq00R8LjmQrxF2MGT",
+  "wss://lb.drpc.live/bsc/At6wv_98sU0It0q2BTEcy9hAFSwe3h8R8JERhhdoDp16",
+  "wss://lb.drpc.live/bsc/AmbwnCrPI0c2nb3_DZivVy6GqQ7XDGUR8bLFcs5opQTS",
+  "wss://lb.drpc.live/bsc/AnQ1H_zIs0nklopQGunnuPCTcOqT7HkR8Jis_qr8MPTs",
+  "wss://lb.drpc.live/bsc/AksFlvO-tUQvsJxhLBbmJvCRID1tl_YR8LtMwg8TMB_n",
+  "wss://lb.drpc.live/bsc/Ao_KB5dDik_SvZXE8ruGKzcSQox2x9cR8JUyQmlfqV1j",
+  "wss://bsc-mainnet.core.chainstack.com/9a1f3131dda40771f214f101ee402efc",
+  "wss://bsc-mainnet.core.chainstack.com/149e314fddbe073ad969f973206acac2",
+  "wss://rpc.ankr.com/bsc/ws/a0110ee93496786a261dc0468efe6c9f4d3ddb9cd53730437d144b9193a59c00"
+]
 cache_dir = "cache/bsc"
 
 [[start_tokens]]
@@ -127,7 +138,7 @@ profit_share_bps = 5000          # 50% of profit → priority fee
 flash_loan_fee_aave_bps = 5      # Aave V3 flash-loan fee (5 = 0.05%)
 flash_loan_fee_uniswap_v3_bps = 0
 flash_loan_fee_pancakeswap_v3_bps = 0
-max_hops = 4                     # max arb path length
+max_hops = 5                    # max arb path length
 
 max_gas_limit = 450000           # The maximum gas units your arb transaction is allowed to use.
 min_submit_profit_wei = 500000000000000   # ~$0.30 at $600/BNB — net profit threshold to submit
@@ -136,17 +147,12 @@ optimization_steps = 12          # binary search iterations
 min_input_eth = 0.01             # min flash-loan input (BNB units). Below 0.01 BNB the profit is too small to cover gas.
 max_input_eth = 50.0             # max flash-loan input (BNB units). Above 50 BNB you'd drain pool liquidity and the arb collapses anyway.
 max_paths_per_token = 200000     # paths generated per start token at startup
-max_paths_per_block = 150000      # searcher eval is <10ms for 80 paths (parallel rayon), ~120ms for 1000. Paths are shuffled so each block samples different paths.
-searcher_gas_estimate = 250000   # rough gas estimate for searcher pre-screening
+max_paths_per_block = 300000      # searcher eval is <10ms for 80 paths (parallel rayon), ~120ms for 1000. Paths are shuffled so each block samples different paths.
+searcher_gas_estimate = 450000   # rough gas estimate for searcher pre-screening
 num_simulators = 8               # parallel REVM simulator workers (fan-out from shared channel)
-max_sim_paths = 16               # top-N paths (by estimated profit) sent to REVM per block.
-                                 # Rule-of-thumb: (block_time_ms / revm_ms_per_path) * num_simulators
-                                 # BSC: ~400ms / ~185ms × 8 workers ≈ 17 → 16 keeps sims within one BSC block.
-sim_stale_blocks = 1             # simulator discards paths from blocks (chain_head - sim_stale_blocks) or older.
-                                 # BSC: 1 is correct (400ms blocks). Increase for slower chains.
 channel_buffer = 4096            # inter-worker mpsc buffer (larger for 150K paths/block)
 enable_mempool = true            # subscribe to pending DEX swaps from BSC mempool
-max_stale_blocks = 3             # tx-sender stale arb cutoff (blocks behind chain head)
+max_stale_blocks = 5             # stale-block cutoff for both simulators and tx-sender
 strike_threshold = 3             # path/token blacklist strikes before blacklisting
 
 #SKIP_POOL_FILTER=1

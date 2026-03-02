@@ -1,0 +1,753 @@
+[94m[01:14:58.724][0m[[32mINFO[0m] Config loaded: chain=bsc id=56
+[94m[01:14:58.726][0m[[32mINFO[0m] Price pools registered for 4 non-native start token(s): [0x55d398326f99059ff775485246999027b3197955, 0x2170ed0880ac9a755fd29b2688956bd959f933f8, 0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d, 0x7130d2a12b9bcbfae4f2634d864a1ee1ce3ead9c]
+[94m[01:14:58.728][0m[[32mINFO[0m] Flash-loan routing: provider=UniswapV3 fee_bps=0 (dynamic routing from cache=bot/bsc/flashloan-fees.toml)
+[94m[01:14:58.731][0m[[32mINFO[0m] Loaded 3518 V2 pools from cache/bsc/.cached-pools.csv
+[94m[01:14:58.738][0m[[32mINFO[0m] Loaded 5326 V3CL pools from cache/bsc/.cached-v3cl-pools.csv
+[94m[01:14:58.739][0m[[32mINFO[0m] Total pools loaded from cache: 8844
+[94m[01:14:58.740][0m[[32mINFO[0m] [FilterCache] Loaded 2408 safe pool addresses from cache
+[94m[01:14:58.741][0m[[32mINFO[0m] [FilterCache] Applied cache: 8844 → 2408 pools (6436 removed)
+[94m[01:15:02.391][0m[[32mINFO[0m] path_builder: 1000005 arb paths (max_hops=5) from 2408 pools (5 start tokens)
+[94m[01:15:02.396][0m[[32mINFO[0m] Startup seeder: 2408 pools, 5 start tokens, 1000005 arb paths
+[94m[01:15:02.449][0m[[32mINFO[0m] [Startup] eth_gasPrice = 1000000000 wei (1.0000 gwei) — will seed GasStation base_fee
+[94m[01:15:02.449][0m[[32mINFO[0m] [GasStation] Seeded base_fee from live eth_gasPrice: 1000000000 wei (1.0000 gwei)
+[94m[01:15:02.450][0m[[32mINFO[0m] [Quoter] Loaded FlashQuoter deployed bytecode: 3995 bytes
+[94m[01:15:02.450][0m[[32mINFO[0m] [Quoter] FlashQuoter deployed into REVM at 0x1000
+[94m[01:15:02.450][0m[[32mINFO[0m] [StateDB] Prefetching bytecodes for 2408 tracked pools...
+[94m[01:15:06.832][0m[[32mINFO[0m] [StateDB] Prefetched bytecodes: 2408/2408 pools now have code
+[94m[01:15:06.834][0m[[32mINFO[0m] [StateDB] Prefetching 4816 token0/token1 storage slots...
+[94m[01:15:09.555][0m[[32mINFO[0m] [StateDB] Prefetched token slots: 3286 non-zero values stored
+[94m[01:15:09.557][0m[[32mINFO[0m] [StateDB] Prefetching 9632 V3 slot0/liquidity storage slots...
+[94m[01:15:18.435][0m[[32mINFO[0m] [StateDB] Prefetched V3 slots: 9632/9632 stored (non-zero liquidity@4or5=2406, non-zero slot0=2408)
+[94m[01:15:18.438][0m[[32mINFO[0m] [Ignition] Prefetching V3 tick data for 765 pools...
+[94m[01:15:18.443][0m[[32mINFO[0m] [StateDB] Prefetching 6885 V3 tick bitmap slots...
+[94m[01:15:22.907][0m[[32mINFO[0m] [StateDB] Stored 6885 tick bitmap slots
+[94m[01:15:22.916][0m[[32mINFO[0m] [StateDB] Prefetching 14165 initialized tick slots...
+[94m[01:15:34.911][0m[[32mINFO[0m] [StateDB] Prefetched V3 tick data: 6885 bitmap slots, 14165 tick info slots
+[94m[01:15:34.913][0m[[32mINFO[0m] [MarketState] Worker started
+[94m[01:15:35.196][0m[[32mINFO[0m] [Searcher] Worker started with 1000005 paths
+[94m[01:15:35.197][0m[[32mINFO[0m] [Searcher] Startup reserve seed: 2408 pools…
+[94m[01:15:35.197][0m[[32mINFO[0m] [Simulator-0] Worker started (sim_mode=false)
+[94m[01:15:35.197][0m[[32mINFO[0m] [Simulator-1] Worker started (sim_mode=false)
+[94m[01:15:35.197][0m[[32mINFO[0m] [Simulator-2] Worker started (sim_mode=false)
+[94m[01:15:35.197][0m[[32mINFO[0m] [Simulator-3] Worker started (sim_mode=false)
+[94m[01:15:35.197][0m[[32mINFO[0m] [Simulator-4] Worker started (sim_mode=false)
+[94m[01:15:35.197][0m[[32mINFO[0m] [Simulator-5] Worker started (sim_mode=false)
+[94m[01:15:35.197][0m[[32mINFO[0m] [Simulator-6] Worker started (sim_mode=false)
+[94m[01:15:35.197][0m[[32mINFO[0m] [Pipeline] Mempool listener enabled
+[94m[01:15:35.197][0m[[32mINFO[0m] [Simulator-7] Worker started (sim_mode=false)
+[94m[01:15:35.197][0m[[32mINFO[0m] [TxSender] Worker started (dry_run=false)
+[94m[01:15:35.197][0m[[32mINFO[0m] [Mempool] Connecting to ws://localhost:8546
+[94m[01:15:35.197][0m[[32mINFO[0m] [Simulator-0] Flash-loan provider=UniswapV3 fee_bps=0
+[94m[01:15:35.197][0m[[32mINFO[0m] [Simulator-1] Flash-loan provider=UniswapV3 fee_bps=0
+[94m[01:15:35.197][0m[[32mINFO[0m] [Simulator-2] Flash-loan provider=UniswapV3 fee_bps=0
+[94m[01:15:35.197][0m[[32mINFO[0m] [Simulator-3] Flash-loan provider=UniswapV3 fee_bps=0
+[94m[01:15:35.197][0m[[32mINFO[0m] [Simulator-4] Flash-loan provider=UniswapV3 fee_bps=0
+[94m[01:15:35.198][0m[[32mINFO[0m] [Simulator-5] Flash-loan provider=UniswapV3 fee_bps=0
+[94m[01:15:35.198][0m[[32mINFO[0m] [Simulator-6] Flash-loan provider=UniswapV3 fee_bps=0
+[94m[01:15:35.198][0m[[32mINFO[0m] [Pipeline] Started with 12 workers (8 simulator(s)), 2408 tracked pools
+[94m[01:15:35.198][0m[[32mINFO[0m] [Simulator-7] Flash-loan provider=UniswapV3 fee_bps=0
+[94m[01:15:35.198][0m[[32mINFO[0m] [Searcher] Seeded 765 V3/exotic pools: 764 with spot rates, 1 fee-discounted fallback
+[94m[01:15:35.198][0m[[32mINFO[0m] [Mempool] Monitoring 5 router address(es)
+[94m[01:15:35.200][0m[[32mINFO[0m] Pipeline started (dry_run=false, chain_id=56)
+[94m[01:15:35.200][0m[[32mINFO[0m] [Mempool] Token-pair lookup has 2350 entries
+[94m[01:15:35.201][0m[[32mINFO[0m] Gossip: 11 WS endpoint(s) configured
+[94m[01:15:35.201][0m[[32mINFO[0m] Arbitrage engine running — listening for blocks
+[94m[01:15:35.201][0m[[32mINFO[0m] [Gossip] Starting multi-endpoint block gossip with 11 URL(s)
+[94m[01:15:35.202][0m[[32mINFO[0m] [Gossip][ws-1] Connecting to ws://localhost:8546
+[94m[01:15:35.202][0m[[32mINFO[0m] [Gossip][ws-0] Connecting to ws://localhost:8546
+[94m[01:15:35.202][0m[[32mINFO[0m] [Gossip][ws-10] Connecting to wss://rpc.ankr.com/bsc/ws/a0110ee93496786a261dc0468efe6c9f4d3ddb9cd53730437d144b9193a59c00
+[94m[01:15:35.202][0m[[32mINFO[0m] [Gossip][ws-5] Connecting to wss://lb.drpc.live/bsc/AnQ1H_zIs0nklopQGunnuPCTcOqT7HkR8Jis_qr8MPTs
+[94m[01:15:35.202][0m[[32mINFO[0m] [Gossip][ws-7] Connecting to wss://lb.drpc.live/bsc/Ao_KB5dDik_SvZXE8ruGKzcSQox2x9cR8JUyQmlfqV1j
+[94m[01:15:35.202][0m[[32mINFO[0m] [Gossip][ws-3] Connecting to wss://lb.drpc.live/bsc/At6wv_98sU0It0q2BTEcy9hAFSwe3h8R8JERhhdoDp16
+[94m[01:15:35.202][0m[[32mINFO[0m] [Gossip][ws-8] Connecting to wss://bsc-mainnet.core.chainstack.com/9a1f3131dda40771f214f101ee402efc
+[94m[01:15:35.202][0m[[32mINFO[0m] [Gossip][ws-9] Connecting to wss://bsc-mainnet.core.chainstack.com/149e314fddbe073ad969f973206acac2
+[94m[01:15:35.202][0m[[32mINFO[0m] [Gossip][ws-2] Connecting to wss://lb.drpc.live/bsc/AoBzi9hc10ZYuXKhr5g4Uz-ksgFoq00R8LjmQrxF2MGT
+[94m[01:15:35.202][0m[[32mINFO[0m] [Gossip][ws-6] Connecting to wss://lb.drpc.live/bsc/AksFlvO-tUQvsJxhLBbmJvCRID1tl_YR8LtMwg8TMB_n
+[94m[01:15:35.202][0m[[32mINFO[0m] [Gossip][ws-4] Connecting to wss://lb.drpc.live/bsc/AmbwnCrPI0c2nb3_DZivVy6GqQ7XDGUR8bLFcs5opQTS
+[94m[01:15:35.280][0m[[32mINFO[0m] [Simulator-2] Chain head at startup: 84191285
+[94m[01:15:35.282][0m[[32mINFO[0m] [Simulator-3] Chain head at startup: 84191285
+[94m[01:15:35.282][0m[[32mINFO[0m] [Simulator-6] Chain head at startup: 84191285
+[94m[01:15:35.283][0m[[32mINFO[0m] [TxSender] Nonce seeded from chain: 40 (signer: 0x957f2aACf12e9d7bcb9dCAF32B1FD51702BBe312)
+[94m[01:15:35.283][0m[[32mINFO[0m] [Simulator-7] Chain head at startup: 84191285
+[94m[01:15:35.284][0m[[32mINFO[0m] [Simulator-4] Chain head at startup: 84191285
+[94m[01:15:35.284][0m[[32mINFO[0m] [Simulator-5] Chain head at startup: 84191285
+[94m[01:15:35.284][0m[[32mINFO[0m] [Simulator-0] Chain head at startup: 84191285
+[94m[01:15:35.290][0m[[32mINFO[0m] [Simulator-1] Chain head at startup: 84191285
+[94m[01:15:35.334][0m[[32mINFO[0m] [Mempool] Subscribed to full pending transactions
+[94m[01:15:35.335][0m[[32mINFO[0m] [Gossip][ws-1] Subscribed — streaming blocks
+[94m[01:15:35.336][0m[[32mINFO[0m] [Gossip][ws-0] Subscribed — streaming blocks
+[94m[01:15:35.370][0m[[32mINFO[0m] [TxSender] Sequencer connection warmed up
+[94m[01:15:35.413][0m[[32mINFO[0m] [Gossip][ws-6] Subscribed — streaming blocks
+[94m[01:15:35.413][0m[[32mINFO[0m] [Gossip][ws-4] Subscribed — streaming blocks
+[94m[01:15:35.413][0m[[32mINFO[0m] [Gossip][ws-7] Subscribed — streaming blocks
+[94m[01:15:35.413][0m[[32mINFO[0m] [Gossip][ws-8] Subscribed — streaming blocks
+[94m[01:15:35.419][0m[[32mINFO[0m] [Gossip][ws-9] Subscribed — streaming blocks
+[94m[01:15:35.419][0m[[32mINFO[0m] [Gossip][ws-5] Subscribed — streaming blocks
+[94m[01:15:35.419][0m[[32mINFO[0m] [Gossip][ws-2] Subscribed — streaming blocks
+[94m[01:15:35.421][0m[[32mINFO[0m] [Gossip][ws-3] Subscribed — streaming blocks
+[94m[01:15:35.444][0m[[32mINFO[0m] [TxSender] Chain head at startup: 84191285
+[94m[01:15:35.664][0m[[32mINFO[0m] [Gossip][ws-10] Subscribed — streaming blocks
+[94m[01:15:35.697][0m[[32mINFO[0m] [Searcher] Prefetched 1643/1643 V2 reserves — computing initial rates…
+[94m[01:15:35.704][0m[[32mINFO[0m] [Searcher] Startup seed complete: 4814 rate entries in 0.5s
+[94m[01:15:35.704][0m[[32mINFO[0m] [Searcher] DBG: top of loop, carry_forward=false
+[94m[01:15:35.704][0m[[32mINFO[0m] [Searcher] DBG: waiting on recv()...
+[94m[01:15:35.714][0m[[32mINFO[0m] [MarketState] Block 84191285 processed: 3 pools updated in 199.6722ms
+[94m[01:15:35.714][0m[[32mINFO[0m] [Searcher] DBG: recv [96mblock=84191285,[0m 3 pools
+[94m[01:15:35.719][0m[[32mINFO[0m] [Searcher] block paths: 3 touched pools → 42731 paths found (under cap)
+[94m[01:15:35.737][0m[[32mINFO[0m] [Searcher] eval 42731 paths: 0 cached, 0 zero-rate (unseeded), 41389 below-min, 1342 passed → simulator
+[94m[01:15:35.738][0m[[32mINFO[0m] [Searcher] DBG: post-eval, results=1342, final_block=84191285
+[94m[01:15:35.738][0m[[32mINFO[0m] [Searcher] DBG: post-drain done, post_drained=0, pre_final=84191285, final_block=84191285
+[94m[01:15:35.738][0m[[32mINFO[0m] [Searcher] DBG: entering send loop, 1342 results to send
+[94m[01:15:35.885][0m[[32mINFO[0m] [MarketState] Block 84191286 processed: 3 pools updated in 170.9929ms
+[94m[01:15:36.172][0m[[32mINFO[0m] [MarketState] Block 84191287 processed: 1 pools updated in 114.5113ms
+[94m[01:15:36.344][0m[[31mWARN[0m] [Quoter] REVM revert #0: gas_used=110152, data=
+[94m[01:15:36.344][0m[[35mDEBUG[0m] [Simulator] quote_path returned None for 9cfcaa196bb58bc8 (swap reverted or OOG)
+[94m[01:15:36.345][0m[[35mDEBUG[0m] [Simulator-1] Path 9cfcaa196bb58bc8 not profitable
+[94m[01:15:36.682][0m[[31mWARN[0m] [Quoter] REVM revert #1: gas_used=231656, data=
+[94m[01:15:36.683][0m[[35mDEBUG[0m] [Simulator] quote_path returned None for d16247b2f1dc8e1d (swap reverted or OOG)
+[94m[01:15:36.684][0m[[35mDEBUG[0m] [Simulator-0] Path d16247b2f1dc8e1d not profitable
+[94m[01:15:36.720][0m[[32mINFO[0m] [MarketState] Block 84191288 processed: 7 pools updated in 178.9442ms
+[94m[01:15:37.176][0m[[32mINFO[0m] [MarketState] Block 84191289 processed: 3 pools updated in 200.0254ms
+[94m[01:15:37.406][0m[[31mWARN[0m] [Quoter] REVM revert #2: gas_used=158158, data=
+[94m[01:15:37.407][0m[[35mDEBUG[0m] [Simulator] quote_path returned None for f31160692a6b96a9 (swap reverted or OOG)
+[94m[01:15:37.408][0m[[35mDEBUG[0m] [Simulator-0] Path f31160692a6b96a9 not profitable
+[94m[01:15:37.614][0m[[32mINFO[0m] [MarketState] Block 84191290 processed: 3 pools updated in 181.663ms
+[94m[01:15:38.056][0m[[32mINFO[0m] [MarketState] Block 84191291 processed: 4 pools updated in 178.2136ms
+[94m[01:15:38.466][0m[[31mWARN[0m] [Quoter] REVM revert #3: gas_used=240448, data=
+[94m[01:15:38.469][0m[[35mDEBUG[0m] [Simulator] quote_path returned None for 87ff386ac095d0ae (swap reverted or OOG)
+[94m[01:15:38.470][0m[[35mDEBUG[0m] [Simulator-0] Path 87ff386ac095d0ae not profitable
+[94m[01:15:38.525][0m[[32mINFO[0m] [MarketState] Block 84191292 processed: 2 pools updated in 214.8175ms
+[94m[01:15:38.946][0m[[32mINFO[0m] [MarketState] Block 84191293 processed: 3 pools updated in 165.5115ms
+[94m[01:15:39.014][0m[[31mWARN[0m] [Quoter] REVM revert #4: gas_used=110152, data=
+[94m[01:15:39.015][0m[[35mDEBUG[0m] [Simulator] quote_path returned None for dbb6f3f85acb34fd (swap reverted or OOG)
+[94m[01:15:39.016][0m[[35mDEBUG[0m] [Simulator-0] Path dbb6f3f85acb34fd not profitable
+[94m[01:15:39.388][0m[[32mINFO[0m] [MarketState] Block 84191294 processed: 2 pools updated in 126.4912ms
+[94m[01:15:39.884][0m[[32mINFO[0m] [MarketState] Block 84191295 processed: 1 pools updated in 212.6999ms
+[94m[01:15:40.300][0m[[32mINFO[0m] [MarketState] Block 84191296 processed: 4 pools updated in 190.5541ms
+[94m[01:15:40.768][0m[[32mINFO[0m] [MarketState] Block 84191297 processed: 2 pools updated in 224.4624ms
+[94m[01:15:41.177][0m[[32mINFO[0m] [MarketState] Block 84191298 processed: 2 pools updated in 181.7349ms
+[94m[01:15:41.548][0m[[32mINFO[0m] [MarketState] Block 84191299 processed: 1 pools updated in 117.3867ms
+[94m[01:15:42.106][0m[[32mINFO[0m] [MarketState] Block 84191300 processed: 2 pools updated in 220.0413ms
+[94m[01:15:42.483][0m[[32mINFO[0m] [MarketState] Block 84191301 processed: 3 pools updated in 148.8921ms
+[94m[01:15:42.855][0m[[32mINFO[0m] [MarketState] Block 84191302 processed: 0 pools updated in 69.0167ms
+[94m[01:15:43.413][0m[[32mINFO[0m] [MarketState] Block 84191303 processed: 6 pools updated in 181.1499ms
+[94m[01:15:43.938][0m[[32mINFO[0m] [MarketState] Block 84191304 processed: 5 pools updated in 199.9065ms
+[94m[01:15:44.460][0m[[32mINFO[0m] [MarketState] Block 84191305 processed: 5 pools updated in 278.8383ms
+[94m[01:15:44.868][0m[[32mINFO[0m] [MarketState] Block 84191306 processed: 5 pools updated in 190.8603ms
+[94m[01:15:45.272][0m[[32mINFO[0m] [MarketState] Block 84191307 processed: 3 pools updated in 206.0981ms
+[94m[01:15:45.800][0m[[32mINFO[0m] [MarketState] Block 84191308 processed: 5 pools updated in 270.2892ms
+[94m[01:15:46.163][0m[[32mINFO[0m] [MarketState] Block 84191309 processed: 4 pools updated in 206.268ms
+[94m[01:15:46.640][0m[[32mINFO[0m] [MarketState] Block 84191310 processed: 3 pools updated in 204.7036ms
+[94m[01:15:46.925][0m[[32mINFO[0m] [MarketState] Block 84191311 processed: 0 pools updated in 50.0229ms
+[94m[01:15:47.427][0m[[32mINFO[0m] [MarketState] Block 84191312 processed: 1 pools updated in 179.1276ms
+[94m[01:15:47.922][0m[[32mINFO[0m] [MarketState] Block 84191313 processed: 2 pools updated in 227.3297ms
+[94m[01:15:48.299][0m[[32mINFO[0m] [MarketState] Block 84191314 processed: 3 pools updated in 155.0535ms
+[94m[01:15:48.688][0m[[32mINFO[0m] [MarketState] Block 84191315 processed: 0 pools updated in 73.9806ms
+[94m[01:15:49.223][0m[[32mINFO[0m] [MarketState] Block 84191316 processed: 1 pools updated in 164.0308ms
+[94m[01:15:49.772][0m[[32mINFO[0m] [MarketState] Block 84191317 processed: 4 pools updated in 275.9761ms
+[94m[01:15:50.143][0m[[32mINFO[0m] [MarketState] Block 84191318 processed: 1 pools updated in 197.2292ms
+[94m[01:15:50.584][0m[[32mINFO[0m] [MarketState] Block 84191319 processed: 2 pools updated in 170.9842ms
+[94m[01:15:51.161][0m[[32mINFO[0m] [MarketState] Block 84191320 processed: 3 pools updated in 251.1941ms
+[94m[01:15:51.522][0m[[32mINFO[0m] [MarketState] Block 84191321 processed: 2 pools updated in 166.3123ms
+[94m[01:15:51.934][0m[[32mINFO[0m] [MarketState] Block 84191322 processed: 1 pools updated in 149.8188ms
+[94m[01:15:52.380][0m[[32mINFO[0m] [MarketState] Block 84191323 processed: 2 pools updated in 141.0478ms
+[94m[01:15:52.756][0m[[32mINFO[0m] [MarketState] Block 84191324 processed: 0 pools updated in 70.3727ms
+[94m[01:15:53.344][0m[[32mINFO[0m] [MarketState] Block 84191325 processed: 5 pools updated in 208.9329ms
+[94m[01:15:53.749][0m[[32mINFO[0m] [MarketState] Block 84191326 processed: 2 pools updated in 131.4887ms
+[94m[01:15:54.246][0m[[32mINFO[0m] [MarketState] Block 84191327 processed: 2 pools updated in 215.7227ms
+[94m[01:15:54.677][0m[[32mINFO[0m] [MarketState] Block 84191328 processed: 3 pools updated in 216.8736ms
+[94m[01:15:55.104][0m[[32mINFO[0m] [MarketState] Block 84191329 processed: 6 pools updated in 201.9492ms
+[94m[01:15:55.448][0m[[32mINFO[0m] [MarketState] Block 84191330 processed: 1 pools updated in 92.5322ms
+[94m[01:15:55.910][0m[[32mINFO[0m] [MarketState] Block 84191331 processed: 1 pools updated in 120.6421ms
+[94m[01:15:56.445][0m[[32mINFO[0m] [MarketState] Block 84191332 processed: 2 pools updated in 167.9649ms
+[94m[01:15:56.964][0m[[32mINFO[0m] [MarketState] Block 84191333 processed: 1 pools updated in 241.3422ms
+[94m[01:15:57.334][0m[[32mINFO[0m] [MarketState] Block 84191334 processed: 1 pools updated in 181.7607ms
+[94m[01:15:57.859][0m[[32mINFO[0m] [MarketState] Block 84191335 processed: 1 pools updated in 229.8765ms
+[94m[01:15:58.213][0m[[32mINFO[0m] [MarketState] Block 84191336 processed: 1 pools updated in 124.5965ms
+[94m[01:15:58.655][0m[[32mINFO[0m] [MarketState] Block 84191337 processed: 1 pools updated in 120.8133ms
+[94m[01:15:59.195][0m[[32mINFO[0m] [MarketState] Block 84191338 processed: 3 pools updated in 210.6701ms
+[94m[01:15:59.573][0m[[32mINFO[0m] [MarketState] Block 84191339 processed: 1 pools updated in 136.2719ms
+[94m[01:15:59.979][0m[[32mINFO[0m] [MarketState] Block 84191340 processed: 2 pools updated in 98.6205ms
+[94m[01:16:00.527][0m[[32mINFO[0m] [MarketState] Block 84191341 processed: 4 pools updated in 157.5087ms
+[94m[01:16:00.919][0m[[32mINFO[0m] [MarketState] Block 84191342 processed: 2 pools updated in 138.2216ms
+[94m[01:16:01.416][0m[[32mINFO[0m] [MarketState] Block 84191343 processed: 1 pools updated in 170.4638ms
+[94m[01:16:01.964][0m[[32mINFO[0m] [MarketState] Block 84191344 processed: 4 pools updated in 205.6408ms
+[94m[01:16:02.335][0m[[32mINFO[0m] [MarketState] Block 84191345 processed: 4 pools updated in 219.4011ms
+[94m[01:16:02.744][0m[[32mINFO[0m] [MarketState] Block 84191346 processed: 3 pools updated in 153.4448ms
+[94m[01:16:03.373][0m[[32mINFO[0m] [MarketState] Block 84191347 processed: 1 pools updated in 328.1523ms
+[94m[01:16:03.705][0m[[32mINFO[0m] [MarketState] Block 84191348 processed: 5 pools updated in 214.0655ms
+[94m[01:16:04.223][0m[[32mINFO[0m] [MarketState] Block 84191349 processed: 2 pools updated in 257.2636ms
+[94m[01:16:04.600][0m[[32mINFO[0m] [MarketState] Block 84191350 processed: 3 pools updated in 208.4467ms
+[94m[01:16:04.901][0m[[32mINFO[0m] [MarketState] Block 84191351 processed: 0 pools updated in 65.8811ms
+[94m[01:16:05.416][0m[[32mINFO[0m] [Mempool] Stats: 2555 total pending txs, 41 DEX swaps, 1 pools forwarded
+[94m[01:16:05.449][0m[[32mINFO[0m] [MarketState] Block 84191352 processed: 3 pools updated in 181.6641ms
+[94m[01:16:05.909][0m[[32mINFO[0m] [MarketState] Block 84191353 processed: 2 pools updated in 203.2962ms
+[94m[01:16:06.301][0m[[32mINFO[0m] [MarketState] Block 84191354 processed: 1 pools updated in 141.3889ms
+[94m[01:16:06.787][0m[[32mINFO[0m] [MarketState] Block 84191355 processed: 4 pools updated in 165.3763ms
+[94m[01:16:07.208][0m[[32mINFO[0m] [MarketState] Block 84191356 processed: 1 pools updated in 156.721ms
+[94m[01:16:07.742][0m[[32mINFO[0m] [MarketState] Block 84191357 processed: 2 pools updated in 231.4198ms
+[94m[01:16:08.169][0m[[32mINFO[0m] [MarketState] Block 84191358 processed: 4 pools updated in 202.9663ms
+[94m[01:16:08.466][0m[[32mINFO[0m] [MarketState] Block 84191359 processed: 0 pools updated in 59.1147ms
+[94m[01:16:09.170][0m[[32mINFO[0m] [MarketState] Block 84191360 processed: 2 pools updated in 216.6945ms
+[94m[01:16:09.419][0m[[32mINFO[0m] [MarketState] Block 84191361 processed: 0 pools updated in 52.8445ms
+[94m[01:16:10.051][0m[[32mINFO[0m] [MarketState] Block 84191362 processed: 1 pools updated in 226.8062ms
+[94m[01:16:10.505][0m[[32mINFO[0m] [MarketState] Block 84191363 processed: 2 pools updated in 228.5916ms
+[94m[01:16:10.776][0m[[32mINFO[0m] [MarketState] Block 84191364 processed: 0 pools updated in 54.0171ms
+[94m[01:16:11.291][0m[[32mINFO[0m] [MarketState] Block 84191365 processed: 2 pools updated in 112.7185ms
+[94m[01:16:11.784][0m[[32mINFO[0m] [MarketState] Block 84191366 processed: 3 pools updated in 143.2692ms
+[94m[01:16:12.330][0m[[32mINFO[0m] [MarketState] Block 84191367 processed: 2 pools updated in 246.7169ms
+[94m[01:16:12.655][0m[[32mINFO[0m] [MarketState] Block 84191368 processed: 1 pools updated in 108.0541ms
+[94m[01:16:13.130][0m[[32mINFO[0m] [MarketState] Block 84191369 processed: 3 pools updated in 176.9074ms
+[94m[01:16:13.608][0m[[32mINFO[0m] [MarketState] Block 84191370 processed: 2 pools updated in 214.5305ms
+[94m[01:16:14.085][0m[[32mINFO[0m] [MarketState] Block 84191371 processed: 5 pools updated in 205.0625ms
+[94m[01:16:14.508][0m[[32mINFO[0m] [MarketState] Block 84191372 processed: 2 pools updated in 213.8075ms
+[94m[01:16:14.945][0m[[32mINFO[0m] [MarketState] Block 84191373 processed: 6 pools updated in 161.1564ms
+[94m[01:16:15.266][0m[[32mINFO[0m] [MarketState] Block 84191374 processed: 0 pools updated in 65.2764ms
+[94m[01:16:15.876][0m[[32mINFO[0m] [MarketState] Block 84191375 processed: 5 pools updated in 233.3861ms
+[94m[01:16:16.224][0m[[32mINFO[0m] [MarketState] Block 84191376 processed: 1 pools updated in 119.6838ms
+[94m[01:16:16.742][0m[[32mINFO[0m] [MarketState] Block 84191377 processed: 1 pools updated in 191.1935ms
+[94m[01:16:17.449][0m[[32mINFO[0m] [MarketState] Block 84191378 processed: 1 pools updated in 433.7187ms
+[94m[01:16:17.691][0m[[32mINFO[0m] [MarketState] Block 84191379 processed: 2 pools updated in 234.3571ms
+[94m[01:16:18.114][0m[[32mINFO[0m] [MarketState] Block 84191380 processed: 2 pools updated in 199.0117ms
+[94m[01:16:18.487][0m[[32mINFO[0m] [MarketState] Block 84191381 processed: 4 pools updated in 139.5773ms
+[94m[01:16:18.882][0m[[32mINFO[0m] [MarketState] Block 84191382 processed: 0 pools updated in 88.496ms
+[94m[01:16:19.425][0m[[32mINFO[0m] [MarketState] Block 84191383 processed: 2 pools updated in 192.7979ms
+[94m[01:16:19.925][0m[[32mINFO[0m] [MarketState] Block 84191384 processed: 8 pools updated in 259.7768ms
+[94m[01:16:20.320][0m[[32mINFO[0m] [MarketState] Block 84191385 processed: 3 pools updated in 210.2118ms
+[94m[01:16:20.737][0m[[32mINFO[0m] [MarketState] Block 84191386 processed: 4 pools updated in 188.5108ms
+[94m[01:16:21.176][0m[[32mINFO[0m] [MarketState] Block 84191387 processed: 1 pools updated in 153.6229ms
+[94m[01:16:21.710][0m[[32mINFO[0m] [MarketState] Block 84191388 processed: 3 pools updated in 241.5517ms
+[94m[01:16:22.032][0m[[32mINFO[0m] [MarketState] Block 84191389 processed: 1 pools updated in 97.1434ms
+[94m[01:16:22.638][0m[[32mINFO[0m] [MarketState] Block 84191390 processed: 2 pools updated in 279.3349ms
+[94m[01:16:23.021][0m[[32mINFO[0m] [MarketState] Block 84191391 processed: 4 pools updated in 213.0273ms
+[94m[01:16:23.492][0m[[32mINFO[0m] [MarketState] Block 84191392 processed: 3 pools updated in 201.4549ms
+[94m[01:16:23.872][0m[[32mINFO[0m] [MarketState] Block 84191393 processed: 2 pools updated in 122.4832ms
+[94m[01:16:24.343][0m[[32mINFO[0m] [MarketState] Block 84191394 processed: 1 pools updated in 123.617ms
+[94m[01:16:24.913][0m[[32mINFO[0m] [MarketState] Block 84191395 processed: 4 pools updated in 242.9129ms
+[94m[01:16:25.333][0m[[32mINFO[0m] [MarketState] Block 84191396 processed: 1 pools updated in 234.4704ms
+[94m[01:16:25.761][0m[[32mINFO[0m] [MarketState] Block 84191397 processed: 4 pools updated in 212.0271ms
+[94m[01:16:26.295][0m[[32mINFO[0m] [MarketState] Block 84191398 processed: 2 pools updated in 265.1236ms
+[94m[01:16:26.513][0m[[32mINFO[0m] [MarketState] Block 84191399 processed: 0 pools updated in 57.9416ms
+[94m[01:16:27.137][0m[[32mINFO[0m] [MarketState] Block 84191400 processed: 3 pools updated in 193.9731ms
+[94m[01:16:27.563][0m[[32mINFO[0m] [MarketState] Block 84191401 processed: 3 pools updated in 178.7379ms
+[94m[01:16:28.117][0m[[32mINFO[0m] [MarketState] Block 84191402 processed: 1 pools updated in 161.0049ms
+[94m[01:16:28.341][0m[[32mINFO[0m] [MarketState] Block 84191403 processed: 0 pools updated in 79.2753ms
+[94m[01:16:29.021][0m[[32mINFO[0m] [MarketState] Block 84191404 processed: 3 pools updated in 250.6284ms
+[94m[01:16:29.284][0m[[32mINFO[0m] [MarketState] Block 84191405 processed: 2 pools updated in 112.1653ms
+[94m[01:16:29.777][0m[[32mINFO[0m] [MarketState] Block 84191406 processed: 1 pools updated in 121.8857ms
+[94m[01:16:30.329][0m[[32mINFO[0m] [MarketState] Block 84191407 processed: 4 pools updated in 243.5545ms
+[94m[01:16:30.612][0m[[32mINFO[0m] [MarketState] Block 84191408 processed: 2 pools updated in 128.8615ms
+[94m[01:16:31.143][0m[[32mINFO[0m] [MarketState] Block 84191409 processed: 2 pools updated in 194.8428ms
+[94m[01:16:31.574][0m[[32mINFO[0m] [MarketState] Block 84191410 processed: 2 pools updated in 199.3852ms
+[94m[01:16:32.107][0m[[32mINFO[0m] [MarketState] Block 84191411 processed: 2 pools updated in 251.047ms
+[94m[01:16:32.473][0m[[32mINFO[0m] [MarketState] Block 84191412 processed: 2 pools updated in 188.5472ms
+[94m[01:16:32.957][0m[[32mINFO[0m] [MarketState] Block 84191413 processed: 6 pools updated in 211.1815ms
+[94m[01:16:33.397][0m[[32mINFO[0m] [MarketState] Block 84191414 processed: 3 pools updated in 181.7302ms
+[94m[01:16:33.867][0m[[32mINFO[0m] [MarketState] Block 84191415 processed: 3 pools updated in 209.6408ms
+[94m[01:16:34.345][0m[[32mINFO[0m] [MarketState] Block 84191416 processed: 4 pools updated in 207.0192ms
+[94m[01:16:34.732][0m[[32mINFO[0m] [MarketState] Block 84191417 processed: 2 pools updated in 151.3696ms
+[94m[01:16:35.207][0m[[32mINFO[0m] [MarketState] Block 84191418 processed: 3 pools updated in 198.8141ms
+[94m[01:16:35.700][0m[[32mINFO[0m] [MarketState] Block 84191419 processed: 4 pools updated in 205.8914ms
+[94m[01:16:36.195][0m[[32mINFO[0m] [MarketState] Block 84191420 processed: 4 pools updated in 253.0221ms
+[94m[01:16:36.260][0m[[32mINFO[0m] [Mempool] Stats: 5254 total pending txs, 79 DEX swaps, 6 pools forwarded
+[94m[01:16:36.584][0m[[32mINFO[0m] [MarketState] Block 84191421 processed: 2 pools updated in 220.6949ms
+[94m[01:16:37.039][0m[[32mINFO[0m] [MarketState] Block 84191422 processed: 1 pools updated in 186.2818ms
+[94m[01:16:37.510][0m[[32mINFO[0m] [MarketState] Block 84191423 processed: 7 pools updated in 243.3902ms
+[94m[01:16:37.803][0m[[32mINFO[0m] [MarketState] Block 84191424 processed: 1 pools updated in 137.358ms
+[94m[01:16:38.204][0m[[32mINFO[0m] [MarketState] Block 84191425 processed: 0 pools updated in 68.2017ms
+[94m[01:16:38.770][0m[[32mINFO[0m] [MarketState] Block 84191426 processed: 3 pools updated in 198.6191ms
+[94m[01:16:39.171][0m[[32mINFO[0m] [MarketState] Block 84191427 processed: 1 pools updated in 137.3866ms
+[94m[01:16:39.597][0m[[32mINFO[0m] [MarketState] Block 84191428 processed: 1 pools updated in 129.496ms
+[94m[01:16:40.048][0m[[32mINFO[0m] [MarketState] Block 84191429 processed: 1 pools updated in 137.9493ms
+[94m[01:16:40.546][0m[[32mINFO[0m] [MarketState] Block 84191430 processed: 3 pools updated in 156.3896ms
+[94m[01:16:41.004][0m[[32mINFO[0m] [MarketState] Block 84191431 processed: 2 pools updated in 203.0456ms
+[94m[01:16:41.468][0m[[32mINFO[0m] [MarketState] Block 84191432 processed: 3 pools updated in 192.1678ms
+[94m[01:16:41.930][0m[[32mINFO[0m] [MarketState] Block 84191433 processed: 2 pools updated in 220.2975ms
+[94m[01:16:42.383][0m[[32mINFO[0m] [MarketState] Block 84191434 processed: 1 pools updated in 219.8272ms
+[94m[01:16:42.684][0m[[32mINFO[0m] [MarketState] Block 84191435 processed: 0 pools updated in 74.8034ms
+[94m[01:16:43.123][0m[[32mINFO[0m] [MarketState] Block 84191436 processed: 0 pools updated in 65.413ms
+[94m[01:16:43.882][0m[[32mINFO[0m] [MarketState] Block 84191437 processed: 4 pools updated in 387.3016ms
+[94m[01:16:44.102][0m[[32mINFO[0m] [MarketState] Block 84191438 processed: 1 pools updated in 129.0982ms
+[94m[01:16:44.527][0m[[32mINFO[0m] [MarketState] Block 84191439 processed: 1 pools updated in 121.0901ms
+[94m[01:16:45.104][0m[[32mINFO[0m] [MarketState] Block 84191440 processed: 1 pools updated in 184.2315ms
+[94m[01:16:45.494][0m[[32mINFO[0m] [MarketState] Block 84191441 processed: 1 pools updated in 152.699ms
+[94m[01:16:45.953][0m[[32mINFO[0m] [MarketState] Block 84191442 processed: 2 pools updated in 165.1211ms
+[94m[01:16:46.434][0m[[32mINFO[0m] [MarketState] Block 84191443 processed: 4 pools updated in 182.7774ms
+[94m[01:16:46.904][0m[[32mINFO[0m] [MarketState] Block 84191444 processed: 3 pools updated in 218.2777ms
+[94m[01:16:47.379][0m[[32mINFO[0m] [MarketState] Block 84191445 processed: 2 pools updated in 227.0113ms
+[94m[01:16:47.658][0m[[32mINFO[0m] [MarketState] Block 84191446 processed: 0 pools updated in 72.2744ms
+[94m[01:16:48.248][0m[[32mINFO[0m] [MarketState] Block 84191447 processed: 2 pools updated in 194.6215ms
+[94m[01:16:48.725][0m[[32mINFO[0m] [MarketState] Block 84191448 processed: 1 pools updated in 204.6154ms
+[94m[01:16:49.186][0m[[32mINFO[0m] [MarketState] Block 84191449 processed: 4 pools updated in 236.6746ms
+[94m[01:16:49.617][0m[[32mINFO[0m] [MarketState] Block 84191450 processed: 2 pools updated in 212.8604ms
+[94m[01:16:50.018][0m[[32mINFO[0m] [MarketState] Block 84191451 processed: 1 pools updated in 136.4991ms
+[94m[01:16:50.426][0m[[32mINFO[0m] [MarketState] Block 84191452 processed: 1 pools updated in 113.4548ms
+[94m[01:16:50.974][0m[[32mINFO[0m] [MarketState] Block 84191453 processed: 3 pools updated in 217.125ms
+[94m[01:16:51.444][0m[[32mINFO[0m] [MarketState] Block 84191454 processed: 2 pools updated in 252.4664ms
+[94m[01:16:51.790][0m[[32mINFO[0m] [MarketState] Block 84191455 processed: 2 pools updated in 136.58ms
+[94m[01:16:52.329][0m[[32mINFO[0m] [MarketState] Block 84191456 processed: 3 pools updated in 186.3051ms
+[94m[01:16:52.835][0m[[32mINFO[0m] [MarketState] Block 84191457 processed: 3 pools updated in 252.6997ms
+[94m[01:16:53.242][0m[[32mINFO[0m] [MarketState] Block 84191458 processed: 1 pools updated in 213.3498ms
+[94m[01:16:53.691][0m[[32mINFO[0m] [MarketState] Block 84191459 processed: 6 pools updated in 189.548ms
+[94m[01:16:54.190][0m[[32mINFO[0m] [MarketState] Block 84191460 processed: 4 pools updated in 238.7141ms
+[94m[01:16:54.623][0m[[32mINFO[0m] [MarketState] Block 84191461 processed: 7 pools updated in 239.7341ms
+[94m[01:16:55.028][0m[[32mINFO[0m] [MarketState] Block 84191462 processed: 3 pools updated in 205.5944ms
+[94m[01:16:55.500][0m[[32mINFO[0m] [MarketState] Block 84191463 processed: 3 pools updated in 215.1338ms
+[94m[01:16:55.975][0m[[32mINFO[0m] [MarketState] Block 84191464 processed: 3 pools updated in 267.8031ms
+[94m[01:16:56.419][0m[[32mINFO[0m] [MarketState] Block 84191465 processed: 3 pools updated in 255.5603ms
+[94m[01:16:56.825][0m[[32mINFO[0m] [MarketState] Block 84191466 processed: 2 pools updated in 215.1996ms
+[94m[01:16:57.266][0m[[32mINFO[0m] [MarketState] Block 84191467 processed: 2 pools updated in 207.7929ms
+[94m[01:16:57.554][0m[[32mINFO[0m] [MarketState] Block 84191468 processed: 0 pools updated in 53.5444ms
+[94m[01:16:58.138][0m[[32mINFO[0m] [MarketState] Block 84191469 processed: 4 pools updated in 212.1074ms
+[94m[01:16:58.587][0m[[32mINFO[0m] [MarketState] Block 84191470 processed: 5 pools updated in 212.9301ms
+[94m[01:16:59.017][0m[[32mINFO[0m] [MarketState] Block 84191471 processed: 1 pools updated in 196.398ms
+[94m[01:16:59.646][0m[[32mINFO[0m] [MarketState] Block 84191472 processed: 6 pools updated in 292.4687ms
+[94m[01:17:00.084][0m[[32mINFO[0m] [MarketState] Block 84191473 processed: 1 pools updated in 266.4216ms
+[94m[01:17:00.466][0m[[32mINFO[0m] [MarketState] Block 84191474 processed: 2 pools updated in 235.7185ms
+[94m[01:17:00.894][0m[[32mINFO[0m] [MarketState] Block 84191475 processed: 3 pools updated in 205.1496ms
+[94m[01:17:01.294][0m[[32mINFO[0m] [MarketState] Block 84191476 processed: 2 pools updated in 161.8929ms
+[94m[01:17:01.788][0m[[32mINFO[0m] [MarketState] Block 84191477 processed: 3 pools updated in 210.681ms
+[94m[01:17:02.217][0m[[32mINFO[0m] [MarketState] Block 84191478 processed: 4 pools updated in 176.0438ms
+[94m[01:17:02.709][0m[[32mINFO[0m] [MarketState] Block 84191479 processed: 4 pools updated in 224.9106ms
+[94m[01:17:03.081][0m[[32mINFO[0m] [MarketState] Block 84191480 processed: 5 pools updated in 209.7299ms
+[94m[01:17:03.510][0m[[32mINFO[0m] [MarketState] Block 84191481 processed: 3 pools updated in 197.5739ms
+[94m[01:17:03.971][0m[[32mINFO[0m] [MarketState] Block 84191482 processed: 3 pools updated in 193.5677ms
+[94m[01:17:04.436][0m[[32mINFO[0m] [MarketState] Block 84191483 processed: 5 pools updated in 214.828ms
+[94m[01:17:04.900][0m[[32mINFO[0m] [MarketState] Block 84191484 processed: 9 pools updated in 212.2386ms
+[94m[01:17:05.357][0m[[32mINFO[0m] [MarketState] Block 84191485 processed: 4 pools updated in 236.3466ms
+[94m[01:17:05.795][0m[[32mINFO[0m] [MarketState] Block 84191486 processed: 3 pools updated in 218.2045ms
+[94m[01:17:06.137][0m[[32mINFO[0m] [MarketState] Block 84191487 processed: 3 pools updated in 127.2773ms
+[94m[01:17:06.692][0m[[32mINFO[0m] [MarketState] Block 84191488 processed: 5 pools updated in 197.7618ms
+[94m[01:17:06.865][0m[[32mINFO[0m] [Mempool] Stats: 8126 total pending txs, 118 DEX swaps, 11 pools forwarded
+[94m[01:17:07.152][0m[[32mINFO[0m] [MarketState] Block 84191489 processed: 4 pools updated in 203.3999ms
+[94m[01:17:07.652][0m[[32mINFO[0m] [MarketState] Block 84191490 processed: 10 pools updated in 225.2464ms
+[94m[01:17:08.133][0m[[32mINFO[0m] [MarketState] Block 84191491 processed: 16 pools updated in 267.4018ms
+[94m[01:17:08.568][0m[[32mINFO[0m] [MarketState] Block 84191492 processed: 7 pools updated in 222.7681ms
+[94m[01:17:08.968][0m[[32mINFO[0m] [MarketState] Block 84191493 processed: 4 pools updated in 202.6068ms
+[94m[01:17:09.517][0m[[32mINFO[0m] [MarketState] Block 84191494 processed: 15 pools updated in 256.3582ms
+[94m[01:17:09.915][0m[[32mINFO[0m] [MarketState] Block 84191495 processed: 13 pools updated in 238.9721ms
+[94m[01:17:10.296][0m[[32mINFO[0m] [MarketState] Block 84191496 processed: 9 pools updated in 196.6239ms
+[94m[01:17:10.816][0m[[32mINFO[0m] [MarketState] Block 84191497 processed: 13 pools updated in 229.2835ms
+[94m[01:17:11.159][0m[[32mINFO[0m] [MarketState] Block 84191498 processed: 4 pools updated in 171.0891ms
+[94m[01:17:11.782][0m[[32mINFO[0m] [MarketState] Block 84191499 processed: 18 pools updated in 269.0808ms
+[94m[01:17:12.162][0m[[32mINFO[0m] [MarketState] Block 84191500 processed: 8 pools updated in 221.3493ms
+[94m[01:17:12.571][0m[[32mINFO[0m] [MarketState] Block 84191501 processed: 13 pools updated in 209.2169ms
+[94m[01:17:13.048][0m[[32mINFO[0m] [MarketState] Block 84191502 processed: 20 pools updated in 235.2329ms
+[94m[01:17:13.500][0m[[32mINFO[0m] [MarketState] Block 84191503 processed: 19 pools updated in 255.3639ms
+[94m[01:17:13.955][0m[[32mINFO[0m] [MarketState] Block 84191504 processed: 8 pools updated in 215.5798ms
+[94m[01:17:14.376][0m[[32mINFO[0m] [MarketState] Block 84191505 processed: 6 pools updated in 229.1292ms
+[94m[01:17:14.810][0m[[32mINFO[0m] [MarketState] Block 84191506 processed: 5 pools updated in 192.4629ms
+[94m[01:17:15.255][0m[[32mINFO[0m] [MarketState] Block 84191507 processed: 3 pools updated in 202.0369ms
+[94m[01:17:15.777][0m[[32mINFO[0m] [MarketState] Block 84191508 processed: 3 pools updated in 253.4986ms
+[94m[01:17:16.164][0m[[32mINFO[0m] [MarketState] Block 84191509 processed: 5 pools updated in 212.5918ms
+[94m[01:17:16.598][0m[[32mINFO[0m] [MarketState] Block 84191510 processed: 3 pools updated in 203.3612ms
+[94m[01:17:17.086][0m[[32mINFO[0m] [MarketState] Block 84191511 processed: 8 pools updated in 221.2173ms
+[94m[01:17:17.503][0m[[32mINFO[0m] [MarketState] Block 84191512 processed: 5 pools updated in 214.5291ms
+[94m[01:17:18.045][0m[[32mINFO[0m] [MarketState] Block 84191513 processed: 7 pools updated in 271.2687ms
+[94m[01:17:18.495][0m[[32mINFO[0m] [MarketState] Block 84191514 processed: 4 pools updated in 289.7495ms
+[94m[01:17:18.884][0m[[32mINFO[0m] [MarketState] Block 84191515 processed: 3 pools updated in 230.526ms
+[94m[01:17:19.391][0m[[32mINFO[0m] [MarketState] Block 84191516 processed: 1 pools updated in 293.3607ms
+[94m[01:17:19.622][0m[[32mINFO[0m] [MarketState] Block 84191517 processed: 0 pools updated in 67.9476ms
+[94m[01:17:20.240][0m[[32mINFO[0m] [MarketState] Block 84191518 processed: 5 pools updated in 228.2086ms
+[94m[01:17:20.678][0m[[32mINFO[0m] [MarketState] Block 84191519 processed: 2 pools updated in 243.3248ms
+[94m[01:17:21.090][0m[[32mINFO[0m] [MarketState] Block 84191520 processed: 5 pools updated in 219.0769ms
+[94m[01:17:21.589][0m[[32mINFO[0m] [MarketState] Block 84191521 processed: 3 pools updated in 275.4232ms
+[94m[01:17:21.906][0m[[32mINFO[0m] [MarketState] Block 84191522 processed: 3 pools updated in 126.24ms
+[94m[01:17:22.441][0m[[32mINFO[0m] [MarketState] Block 84191523 processed: 2 pools updated in 207.6158ms
+[94m[01:17:22.887][0m[[32mINFO[0m] [MarketState] Block 84191524 processed: 5 pools updated in 234.2627ms
+[94m[01:17:23.379][0m[[32mINFO[0m] [MarketState] Block 84191525 processed: 1 pools updated in 263.633ms
+[94m[01:17:23.791][0m[[32mINFO[0m] [MarketState] Block 84191526 processed: 3 pools updated in 233.7716ms
+[94m[01:17:24.153][0m[[32mINFO[0m] [MarketState] Block 84191527 processed: 2 pools updated in 129.3221ms
+[94m[01:17:24.663][0m[[32mINFO[0m] [MarketState] Block 84191528 processed: 2 pools updated in 142.0646ms
+[94m[01:17:25.238][0m[[32mINFO[0m] [MarketState] Block 84191529 processed: 1 pools updated in 262.0843ms
+[94m[01:17:25.650][0m[[32mINFO[0m] [MarketState] Block 84191530 processed: 7 pools updated in 218.3346ms
+[94m[01:17:26.150][0m[[32mINFO[0m] [MarketState] Block 84191531 processed: 2 pools updated in 268.5838ms
+[94m[01:17:26.561][0m[[32mINFO[0m] [MarketState] Block 84191532 processed: 2 pools updated in 242.0653ms
+[94m[01:17:27.058][0m[[32mINFO[0m] [MarketState] Block 84191533 processed: 5 pools updated in 256.672ms
+[94m[01:17:27.523][0m[[32mINFO[0m] [MarketState] Block 84191534 processed: 3 pools updated in 225.893ms
+[94m[01:17:27.966][0m[[32mINFO[0m] [MarketState] Block 84191535 processed: 4 pools updated in 221.8345ms
+[94m[01:17:28.334][0m[[32mINFO[0m] [MarketState] Block 84191536 processed: 3 pools updated in 197.0055ms
+[94m[01:17:28.754][0m[[32mINFO[0m] [MarketState] Block 84191537 processed: 3 pools updated in 210.2642ms
+[94m[01:17:29.228][0m[[32mINFO[0m] [MarketState] Block 84191538 processed: 2 pools updated in 198.6118ms
+[94m[01:17:29.649][0m[[32mINFO[0m] [MarketState] Block 84191539 processed: 2 pools updated in 195.0799ms
+[94m[01:17:30.070][0m[[32mINFO[0m] [MarketState] Block 84191540 processed: 0 pools updated in 82.492ms
+[94m[01:17:30.698][0m[[32mINFO[0m] [MarketState] Block 84191541 processed: 7 pools updated in 255.4441ms
+[94m[01:17:31.027][0m[[32mINFO[0m] [MarketState] Block 84191542 processed: 2 pools updated in 221.438ms
+[94m[01:17:31.493][0m[[32mINFO[0m] [MarketState] Block 84191543 processed: 2 pools updated in 230.6694ms
+[94m[01:17:31.920][0m[[32mINFO[0m] [MarketState] Block 84191544 processed: 3 pools updated in 221.2582ms
+[94m[01:17:32.386][0m[[32mINFO[0m] [MarketState] Block 84191545 processed: 1 pools updated in 234.7264ms
+[94m[01:17:32.817][0m[[32mINFO[0m] [MarketState] Block 84191546 processed: 2 pools updated in 215.0946ms
+[94m[01:17:33.324][0m[[32mINFO[0m] [MarketState] Block 84191547 processed: 5 pools updated in 240.144ms
+[94m[01:17:33.895][0m[[32mINFO[0m] [MarketState] Block 84191548 processed: 2 pools updated in 377.4631ms
+[94m[01:17:34.179][0m[[32mINFO[0m] [MarketState] Block 84191549 processed: 4 pools updated in 216.5555ms
+[94m[01:17:34.529][0m[[32mINFO[0m] [MarketState] Block 84191550 processed: 1 pools updated in 131.2325ms
+[94m[01:17:35.059][0m[[32mINFO[0m] [MarketState] Block 84191551 processed: 4 pools updated in 226.5898ms
+[94m[01:17:35.444][0m[[32mINFO[0m] [MarketState] Block 84191552 processed: 2 pools updated in 184.8522ms
+[94m[01:17:35.870][0m[[32mINFO[0m] [MarketState] Block 84191553 processed: 1 pools updated in 172.001ms
+[94m[01:17:36.363][0m[[32mINFO[0m] [MarketState] Block 84191554 processed: 6 pools updated in 178.8631ms
+[94m[01:17:36.868][0m[[32mINFO[0m] [MarketState] Block 84191555 processed: 6 pools updated in 251.5652ms
+[94m[01:17:37.204][0m[[32mINFO[0m] [MarketState] Block 84191556 processed: 4 pools updated in 142.6289ms
+[94m[01:17:37.393][0m[[32mINFO[0m] [Mempool] Stats: 11361 total pending txs, 153 DEX swaps, 25 pools forwarded
+[94m[01:17:37.688][0m[[32mINFO[0m] [MarketState] Block 84191557 processed: 1 pools updated in 126.5197ms
+[94m[01:17:38.196][0m[[32mINFO[0m] [MarketState] Block 84191558 processed: 4 pools updated in 226.8953ms
+[94m[01:17:38.601][0m[[32mINFO[0m] [MarketState] Block 84191559 processed: 6 pools updated in 183.7244ms
+[94m[01:17:39.043][0m[[32mINFO[0m] [MarketState] Block 84191560 processed: 2 pools updated in 130.0638ms
+[94m[01:17:39.538][0m[[32mINFO[0m] [MarketState] Block 84191561 processed: 2 pools updated in 178.744ms
+[94m[01:17:39.944][0m[[32mINFO[0m] [MarketState] Block 84191562 processed: 3 pools updated in 130.091ms
+[94m[01:17:40.492][0m[[32mINFO[0m] [MarketState] Block 84191563 processed: 3 pools updated in 248.6745ms
+[94m[01:17:40.907][0m[[32mINFO[0m] [MarketState] Block 84191564 processed: 4 pools updated in 215.4284ms
+[94m[01:17:41.281][0m[[32mINFO[0m] [MarketState] Block 84191565 processed: 4 pools updated in 132.2414ms
+[94m[01:17:41.809][0m[[32mINFO[0m] [MarketState] Block 84191566 processed: 4 pools updated in 204.2885ms
+[94m[01:17:42.284][0m[[32mINFO[0m] [MarketState] Block 84191567 processed: 3 pools updated in 209.6136ms
+[94m[01:17:42.758][0m[[32mINFO[0m] [MarketState] Block 84191568 processed: 4 pools updated in 199.2515ms
+[94m[01:17:43.249][0m[[32mINFO[0m] [MarketState] Block 84191569 processed: 2 pools updated in 257.2834ms
+[94m[01:17:43.737][0m[[32mINFO[0m] [MarketState] Block 84191570 processed: 3 pools updated in 271.1069ms
+[94m[01:17:44.149][0m[[32mINFO[0m] [MarketState] Block 84191571 processed: 4 pools updated in 261.1515ms
+[94m[01:17:44.519][0m[[32mINFO[0m] [MarketState] Block 84191572 processed: 3 pools updated in 165.2266ms
+[94m[01:17:45.050][0m[[32mINFO[0m] [MarketState] Block 84191573 processed: 5 pools updated in 264.1987ms
+[94m[01:17:45.454][0m[[32mINFO[0m] [MarketState] Block 84191574 processed: 3 pools updated in 194.2563ms
+[94m[01:17:45.926][0m[[32mINFO[0m] [MarketState] Block 84191575 processed: 5 pools updated in 222.0793ms
+[94m[01:17:46.403][0m[[32mINFO[0m] [MarketState] Block 84191576 processed: 2 pools updated in 290.6839ms
+[94m[01:17:46.812][0m[[32mINFO[0m] [MarketState] Block 84191577 processed: 4 pools updated in 264.7519ms
+[94m[01:17:47.204][0m[[32mINFO[0m] [MarketState] Block 84191578 processed: 7 pools updated in 213.1294ms
+[94m[01:17:47.538][0m[[32mINFO[0m] [MarketState] Block 84191579 processed: 2 pools updated in 114.6625ms
+[94m[01:17:48.147][0m[[32mINFO[0m] [MarketState] Block 84191580 processed: 9 pools updated in 220.3418ms
+[94m[01:17:48.663][0m[[32mINFO[0m] [MarketState] Block 84191581 processed: 8 pools updated in 299.4804ms
+[94m[01:17:49.041][0m[[32mINFO[0m] [MarketState] Block 84191582 processed: 5 pools updated in 259.6875ms
+[94m[01:17:49.515][0m[[32mINFO[0m] [MarketState] Block 84191583 processed: 4 pools updated in 203.6288ms
+[94m[01:17:49.893][0m[[32mINFO[0m] [MarketState] Block 84191584 processed: 7 pools updated in 179.7225ms
+[94m[01:17:50.365][0m[[32mINFO[0m] [MarketState] Block 84191585 processed: 5 pools updated in 177.9181ms
+[94m[01:17:50.650][0m[[35mDEBUG[0m] [Simulator] quote_path returned None for 48610bd8d21bb348 (swap reverted or OOG)
+[94m[01:17:50.651][0m[[35mDEBUG[0m] [Simulator-1] Path 48610bd8d21bb348 not profitable
+[94m[01:17:50.820][0m[[32mINFO[0m] [MarketState] Block 84191586 processed: 5 pools updated in 198.8783ms
+[94m[01:17:51.201][0m[[32mINFO[0m] [MarketState] Block 84191587 processed: 1 pools updated in 127.5265ms
+[94m[01:17:51.265][0m[[35mDEBUG[0m] [Simulator] quote_path returned None for 6798c9197b611974 (swap reverted or OOG)
+[94m[01:17:51.266][0m[[35mDEBUG[0m] [Simulator] path b12bac450ad096 not viable: min_input=10000000000000000 gives out=2462684285
+[94m[01:17:51.267][0m[[35mDEBUG[0m] [Simulator-1] Path 6798c9197b611974 not profitable
+[94m[01:17:51.267][0m[[35mDEBUG[0m] [Simulator-3] Path b12bac450ad096 not profitable
+[94m[01:17:51.664][0m[[35mDEBUG[0m] [Simulator] path 58949d7e0907bb81 not viable: min_input=10000000000000000 gives out=2454258463
+[94m[01:17:51.666][0m[[35mDEBUG[0m] [Simulator-4] Path 58949d7e0907bb81 not profitable
+[94m[01:17:51.775][0m[[32mINFO[0m] [MarketState] Block 84191588 processed: 3 pools updated in 208.3747ms
+[94m[01:17:52.247][0m[[32mINFO[0m] [MarketState] Block 84191589 processed: 1 pools updated in 213.9272ms
+[94m[01:17:52.678][0m[[32mINFO[0m] [MarketState] Block 84191590 processed: 4 pools updated in 216.5291ms
+[94m[01:17:53.111][0m[[32mINFO[0m] [MarketState] Block 84191591 processed: 3 pools updated in 260.5896ms
+[94m[01:17:53.525][0m[[32mINFO[0m] [MarketState] Block 84191592 processed: 1 pools updated in 268.1441ms
+[94m[01:17:53.959][0m[[32mINFO[0m] [MarketState] Block 84191593 processed: 7 pools updated in 219.3116ms
+[94m[01:17:54.286][0m[[32mINFO[0m] [MarketState] Block 84191594 processed: 1 pools updated in 127.4651ms
+[94m[01:17:54.819][0m[[32mINFO[0m] [MarketState] Block 84191595 processed: 1 pools updated in 188.0074ms
+[94m[01:17:55.283][0m[[32mINFO[0m] [MarketState] Block 84191596 processed: 4 pools updated in 224.1832ms
+[94m[01:17:55.557][0m[[35mDEBUG[0m] [Simulator] quote_path returned None for e502fdad143fe227 (swap reverted or OOG)
+[94m[01:17:55.559][0m[[35mDEBUG[0m] [Simulator-0] Path e502fdad143fe227 not profitable
+[94m[01:17:55.701][0m[[32mINFO[0m] [MarketState] Block 84191597 processed: 1 pools updated in 197.9275ms
+[94m[01:17:56.191][0m[[32mINFO[0m] [MarketState] Block 84191598 processed: 2 pools updated in 216.0348ms
+[94m[01:17:56.639][0m[[32mINFO[0m] [MarketState] Block 84191599 processed: 3 pools updated in 216.6714ms
+[94m[01:17:57.095][0m[[32mINFO[0m] [MarketState] Block 84191600 processed: 2 pools updated in 235.3726ms
+[94m[01:17:58.079][0m[[32mINFO[0m] [MarketState] Block 84191601 processed: 1 pools updated in 679.0324ms
+[94m[01:17:58.282][0m[[32mINFO[0m] [MarketState] Block 84191602 processed: 7 pools updated in 199.7407ms
+[94m[01:17:58.502][0m[[32mINFO[0m] [MarketState] Block 84191603 processed: 4 pools updated in 220.1301ms
+[94m[01:17:58.813][0m[[32mINFO[0m] [MarketState] Block 84191604 processed: 2 pools updated in 133.9121ms
+[94m[01:17:59.296][0m[[32mINFO[0m] [MarketState] Block 84191605 processed: 14 pools updated in 161.4479ms
+[94m[01:17:59.864][0m[[32mINFO[0m] [MarketState] Block 84191606 processed: 18 pools updated in 219.5248ms
+[94m[01:18:00.306][0m[[32mINFO[0m] [MarketState] Block 84191607 processed: 9 pools updated in 187.4019ms
+[94m[01:18:00.740][0m[[32mINFO[0m] [MarketState] Block 84191608 processed: 13 pools updated in 214.2013ms
+[94m[01:18:01.223][0m[[32mINFO[0m] [MarketState] Block 84191609 processed: 11 pools updated in 241.4392ms
+[94m[01:18:01.639][0m[[32mINFO[0m] [MarketState] Block 84191610 processed: 7 pools updated in 204.8274ms
+[94m[01:18:01.818][0m[[35mDEBUG[0m] [Simulator] path 6e9edf05b0bfac34 not viable: min_input=10000000000000000 gives out=49425552
+[94m[01:18:01.819][0m[[35mDEBUG[0m] [Simulator-2] Path 6e9edf05b0bfac34 not profitable
+[94m[01:18:02.110][0m[[32mINFO[0m] [MarketState] Block 84191611 processed: 20 pools updated in 207.8596ms
+[94m[01:18:02.511][0m[[32mINFO[0m] [MarketState] Block 84191612 processed: 5 pools updated in 188.2415ms
+[94m[01:18:02.894][0m[[35mDEBUG[0m] [Simulator] path 68b01a13ebc8d5ef not viable: min_input=10000000000000000 gives out=2340827956
+[94m[01:18:02.898][0m[[35mDEBUG[0m] [Simulator-6] Path 68b01a13ebc8d5ef not profitable
+[94m[01:18:03.020][0m[[32mINFO[0m] [MarketState] Block 84191613 processed: 11 pools updated in 235.5742ms
+[94m[01:18:03.127][0m[[35mDEBUG[0m] [Simulator] path 4edf740fd9867d32 not viable: min_input=10000000000000000 gives out=49425552
+[94m[01:18:03.128][0m[[35mDEBUG[0m] [Simulator-7] Path 4edf740fd9867d32 not profitable
+[94m[01:18:03.397][0m[[32mINFO[0m] [MarketState] Block 84191614 processed: 2 pools updated in 159.3109ms
+[94m[01:18:03.836][0m[[32mINFO[0m] [MarketState] Block 84191615 processed: 3 pools updated in 162.7522ms
+[94m[01:18:04.015][0m[[35mDEBUG[0m] [Simulator] path 2cdf7905d2c58ef7 not viable: min_input=10000000000000000 gives out=2332819008
+[94m[01:18:04.016][0m[[35mDEBUG[0m] [Simulator-5] Path 2cdf7905d2c58ef7 not profitable
+[94m[01:18:04.267][0m[[32mINFO[0m] [MarketState] Block 84191616 processed: 6 pools updated in 152.9066ms
+[94m[01:18:04.693][0m[[32mINFO[0m] [MarketState] Block 84191617 processed: 2 pools updated in 139.0645ms
+[94m[01:18:05.208][0m[[32mINFO[0m] [MarketState] Block 84191618 processed: 5 pools updated in 195.3931ms
+[94m[01:18:05.667][0m[[32mINFO[0m] [MarketState] Block 84191619 processed: 3 pools updated in 193.0923ms
+[94m[01:18:06.127][0m[[32mINFO[0m] [MarketState] Block 84191620 processed: 2 pools updated in 203.7883ms
+[94m[01:18:06.415][0m[[32mINFO[0m] [MarketState] Block 84191621 processed: 0 pools updated in 51.3828ms
+[94m[01:18:07.050][0m[[32mINFO[0m] [MarketState] Block 84191622 processed: 5 pools updated in 263.0421ms
+[94m[01:18:07.399][0m[[32mINFO[0m] [Mempool] Stats: 14464 total pending txs, 203 DEX swaps, 52 pools forwarded
+[94m[01:18:07.542][0m[[32mINFO[0m] [MarketState] Block 84191623 processed: 2 pools updated in 272.9472ms
+[94m[01:18:07.927][0m[[32mINFO[0m] [MarketState] Block 84191624 processed: 5 pools updated in 198.6304ms
+[94m[01:18:08.473][0m[[32mINFO[0m] [MarketState] Block 84191625 processed: 10 pools updated in 244.1317ms
+[94m[01:18:08.879][0m[[32mINFO[0m] [MarketState] Block 84191626 processed: 9 pools updated in 217.4018ms
+[94m[01:18:09.411][0m[[32mINFO[0m] [MarketState] Block 84191627 processed: 5 pools updated in 263.6067ms
+[94m[01:18:09.769][0m[[32mINFO[0m] [MarketState] Block 84191628 processed: 8 pools updated in 206.9925ms
+[94m[01:18:10.177][0m[[32mINFO[0m] [MarketState] Block 84191629 processed: 3 pools updated in 186.6257ms
+[94m[01:18:10.671][0m[[32mINFO[0m] [MarketState] Block 84191630 processed: 4 pools updated in 228.0646ms
+[94m[01:18:11.102][0m[[32mINFO[0m] [MarketState] Block 84191631 processed: 2 pools updated in 223.2156ms
+[94m[01:18:11.574][0m[[32mINFO[0m] [MarketState] Block 84191632 processed: 6 pools updated in 252.2963ms
+[94m[01:18:12.001][0m[[32mINFO[0m] [MarketState] Block 84191633 processed: 4 pools updated in 239.1045ms
+[94m[01:18:12.419][0m[[32mINFO[0m] [MarketState] Block 84191634 processed: 3 pools updated in 178.2614ms
+[94m[01:18:12.891][0m[[32mINFO[0m] [MarketState] Block 84191635 processed: 6 pools updated in 234.5444ms
+[94m[01:18:13.248][0m[[32mINFO[0m] [MarketState] Block 84191636 processed: 3 pools updated in 150.2653ms
+[94m[01:18:13.761][0m[[32mINFO[0m] [MarketState] Block 84191637 processed: 2 pools updated in 215.1217ms
+[94m[01:18:14.217][0m[[32mINFO[0m] [MarketState] Block 84191638 processed: 4 pools updated in 217.8862ms
+[94m[01:18:14.615][0m[[32mINFO[0m] [MarketState] Block 84191639 processed: 5 pools updated in 151.2902ms
+[94m[01:18:15.116][0m[[32mINFO[0m] [MarketState] Block 84191640 processed: 6 pools updated in 178.8034ms
+[94m[01:18:15.930][0m[[32mINFO[0m] [MarketState] Block 84191641 processed: 3 pools updated in 549.3149ms
+[94m[01:18:16.103][0m[[32mINFO[0m] [MarketState] Block 84191642 processed: 2 pools updated in 168.7998ms
+[94m[01:18:16.450][0m[[32mINFO[0m] [MarketState] Block 84191643 processed: 0 pools updated in 108.9835ms
+[94m[01:18:17.008][0m[[32mINFO[0m] [MarketState] Block 84191644 processed: 5 pools updated in 240.849ms
+[94m[01:18:17.395][0m[[32mINFO[0m] [MarketState] Block 84191645 processed: 5 pools updated in 207.9689ms
+[94m[01:18:17.917][0m[[32mINFO[0m] [MarketState] Block 84191646 processed: 6 pools updated in 237.5964ms
+[94m[01:18:18.285][0m[[32mINFO[0m] [MarketState] Block 84191647 processed: 2 pools updated in 205.5327ms
+[94m[01:18:18.744][0m[[32mINFO[0m] [MarketState] Block 84191648 processed: 2 pools updated in 240.1973ms
+[94m[01:18:19.078][0m[[32mINFO[0m] [MarketState] Block 84191649 processed: 2 pools updated in 173.6064ms
+[94m[01:18:19.665][0m[[32mINFO[0m] [MarketState] Block 84191650 processed: 2 pools updated in 264.1856ms
+[94m[01:18:20.031][0m[[32mINFO[0m] [MarketState] Block 84191651 processed: 7 pools updated in 209.7034ms
+[94m[01:18:20.416][0m[[32mINFO[0m] [MarketState] Block 84191652 processed: 3 pools updated in 151.0546ms
+[94m[01:18:20.773][0m[[32mINFO[0m] [MarketState] Block 84191653 processed: 0 pools updated in 64.699ms
+[94m[01:18:21.377][0m[[32mINFO[0m] [MarketState] Block 84191654 processed: 5 pools updated in 211.9348ms
+[94m[01:18:21.667][0m[[32mINFO[0m] [MarketState] Block 84191655 processed: 0 pools updated in 64.4442ms
+[94m[01:18:22.384][0m[[32mINFO[0m] [MarketState] Block 84191656 processed: 0 pools updated in 282.9492ms
+[94m[01:18:22.751][0m[[32mINFO[0m] [MarketState] Block 84191657 processed: 7 pools updated in 186.2573ms
+[94m[01:18:23.243][0m[[32mINFO[0m] [MarketState] Block 84191658 processed: 9 pools updated in 233.9353ms
+[94m[01:18:23.696][0m[[32mINFO[0m] [MarketState] Block 84191659 processed: 5 pools updated in 221.8463ms
+[94m[01:18:24.174][0m[[32mINFO[0m] [MarketState] Block 84191660 processed: 4 pools updated in 251.8055ms
+[94m[01:18:24.590][0m[[32mINFO[0m] [MarketState] Block 84191661 processed: 1 pools updated in 236.7931ms
+[94m[01:18:25.019][0m[[32mINFO[0m] [MarketState] Block 84191662 processed: 8 pools updated in 210.6864ms
+[94m[01:18:25.492][0m[[32mINFO[0m] [MarketState] Block 84191663 processed: 5 pools updated in 255.6466ms
+[94m[01:18:25.945][0m[[32mINFO[0m] [MarketState] Block 84191664 processed: 7 pools updated in 247.8623ms
+[94m[01:18:26.298][0m[[32mINFO[0m] [MarketState] Block 84191665 processed: 3 pools updated in 187.3629ms
+[94m[01:18:26.764][0m[[32mINFO[0m] [MarketState] Block 84191666 processed: 3 pools updated in 195.159ms
+[94m[01:18:27.241][0m[[32mINFO[0m] [MarketState] Block 84191667 processed: 2 pools updated in 222.4256ms
+[94m[01:18:27.725][0m[[32mINFO[0m] [MarketState] Block 84191668 processed: 2 pools updated in 222.428ms
+[94m[01:18:28.129][0m[[32mINFO[0m] [MarketState] Block 84191669 processed: 6 pools updated in 218.9505ms
+[94m[01:18:28.650][0m[[32mINFO[0m] [MarketState] Block 84191670 processed: 2 pools updated in 243.3648ms
+[94m[01:18:29.243][0m[[32mINFO[0m] [MarketState] Block 84191671 processed: 1 pools updated in 364.7057ms
+[94m[01:18:29.486][0m[[32mINFO[0m] [MarketState] Block 84191672 processed: 3 pools updated in 156.4578ms
+[94m[01:18:29.960][0m[[32mINFO[0m] [MarketState] Block 84191673 processed: 1 pools updated in 217.9764ms
+[94m[01:18:30.431][0m[[32mINFO[0m] [MarketState] Block 84191674 processed: 3 pools updated in 228.6299ms
+[94m[01:18:30.888][0m[[32mINFO[0m] [MarketState] Block 84191675 processed: 5 pools updated in 228.1752ms
+[94m[01:18:31.333][0m[[32mINFO[0m] [MarketState] Block 84191676 processed: 5 pools updated in 219.7555ms
+[94m[01:18:31.759][0m[[32mINFO[0m] [MarketState] Block 84191677 processed: 1 pools updated in 208.6414ms
+[94m[01:18:32.270][0m[[32mINFO[0m] [MarketState] Block 84191678 processed: 2 pools updated in 141.5424ms
+[94m[01:18:32.594][0m[[32mINFO[0m] [MarketState] Block 84191679 processed: 4 pools updated in 157.1549ms
+[94m[01:18:33.183][0m[[32mINFO[0m] [MarketState] Block 84191680 processed: 6 pools updated in 261.0697ms
+[94m[01:18:33.410][0m[[32mINFO[0m] [MarketState] Block 84191681 processed: 0 pools updated in 70.9997ms
+[94m[01:18:34.010][0m[[32mINFO[0m] [MarketState] Block 84191682 processed: 5 pools updated in 225.5789ms
+[94m[01:18:34.369][0m[[32mINFO[0m] [MarketState] Block 84191683 processed: 2 pools updated in 134.6274ms
+[94m[01:18:34.923][0m[[32mINFO[0m] [MarketState] Block 84191684 processed: 3 pools updated in 222.2099ms
+[94m[01:18:35.407][0m[[32mINFO[0m] [MarketState] Block 84191685 processed: 4 pools updated in 260.8897ms
+[94m[01:18:35.787][0m[[32mINFO[0m] [MarketState] Block 84191686 processed: 2 pools updated in 182.5526ms
+[94m[01:18:36.292][0m[[32mINFO[0m] [MarketState] Block 84191687 processed: 4 pools updated in 245.2178ms
+[94m[01:18:36.657][0m[[32mINFO[0m] [MarketState] Block 84191688 processed: 1 pools updated in 170.6502ms
+[94m[01:18:37.125][0m[[32mINFO[0m] [MarketState] Block 84191689 processed: 11 pools updated in 183.9137ms
+[94m[01:18:37.591][0m[[32mINFO[0m] [MarketState] Block 84191690 processed: 13 pools updated in 211.5333ms
+[94m[01:18:38.161][0m[[32mINFO[0m] [MarketState] Block 84191691 processed: 13 pools updated in 275.6072ms
+[94m[01:18:38.283][0m[[32mINFO[0m] [Mempool] Stats: 17229 total pending txs, 241 DEX swaps, 63 pools forwarded
+[94m[01:18:38.534][0m[[32mINFO[0m] [MarketState] Block 84191692 processed: 19 pools updated in 225.7043ms
+[94m[01:18:38.964][0m[[32mINFO[0m] [MarketState] Block 84191693 processed: 6 pools updated in 232.307ms
+[94m[01:18:39.407][0m[[32mINFO[0m] [MarketState] Block 84191694 processed: 7 pools updated in 230.5921ms
+[94m[01:18:39.849][0m[[32mINFO[0m] [MarketState] Block 84191695 processed: 4 pools updated in 215.8284ms
+[94m[01:18:40.409][0m[[32mINFO[0m] [MarketState] Block 84191696 processed: 4 pools updated in 262.9671ms
+[94m[01:18:40.781][0m[[32mINFO[0m] [MarketState] Block 84191697 processed: 5 pools updated in 181.6566ms
+[94m[01:18:41.280][0m[[32mINFO[0m] [MarketState] Block 84191698 processed: 8 pools updated in 233.9826ms
+[94m[01:18:41.732][0m[[32mINFO[0m] [MarketState] Block 84191699 processed: 4 pools updated in 255.8252ms
+[94m[01:18:42.072][0m[[32mINFO[0m] [MarketState] Block 84191700 processed: 1 pools updated in 142.2101ms
+[94m[01:18:42.625][0m[[32mINFO[0m] [MarketState] Block 84191701 processed: 4 pools updated in 234.405ms
+[94m[01:18:43.084][0m[[32mINFO[0m] [MarketState] Block 84191702 processed: 4 pools updated in 257.2858ms
+[94m[01:18:43.530][0m[[32mINFO[0m] [MarketState] Block 84191703 processed: 4 pools updated in 239.1162ms
+[94m[01:18:44.033][0m[[32mINFO[0m] [MarketState] Block 84191704 processed: 3 pools updated in 306.8608ms
+[94m[01:18:44.416][0m[[32mINFO[0m] [MarketState] Block 84191705 processed: 3 pools updated in 266.0627ms
+[94m[01:18:44.854][0m[[32mINFO[0m] [MarketState] Block 84191706 processed: 4 pools updated in 212.4794ms
+[94m[01:18:45.329][0m[[32mINFO[0m] [MarketState] Block 84191707 processed: 1 pools updated in 234.8635ms
+[94m[01:18:45.891][0m[[32mINFO[0m] [MarketState] Block 84191708 processed: 9 pools updated in 337.5994ms
+[94m[01:18:46.237][0m[[32mINFO[0m] [MarketState] Block 84191709 processed: 11 pools updated in 234.9418ms
+[94m[01:18:46.692][0m[[32mINFO[0m] [MarketState] Block 84191710 processed: 9 pools updated in 244.7479ms
+[94m[01:18:47.089][0m[[32mINFO[0m] [MarketState] Block 84191711 processed: 4 pools updated in 204.2771ms
+[94m[01:18:47.506][0m[[32mINFO[0m] [MarketState] Block 84191712 processed: 3 pools updated in 202.8259ms
+[94m[01:18:47.984][0m[[32mINFO[0m] [MarketState] Block 84191713 processed: 5 pools updated in 208.5331ms
+[94m[01:18:48.440][0m[[32mINFO[0m] [MarketState] Block 84191714 processed: 6 pools updated in 217.1172ms
+[94m[01:18:48.894][0m[[32mINFO[0m] [MarketState] Block 84191715 processed: 4 pools updated in 228.1896ms
+[94m[01:18:49.306][0m[[32mINFO[0m] [MarketState] Block 84191716 processed: 8 pools updated in 206.6188ms
+[94m[01:18:49.787][0m[[32mINFO[0m] [MarketState] Block 84191717 processed: 4 pools updated in 235.9059ms
+[94m[01:18:50.191][0m[[32mINFO[0m] [MarketState] Block 84191718 processed: 3 pools updated in 183.7292ms
+[94m[01:18:50.707][0m[[32mINFO[0m] [MarketState] Block 84191719 processed: 5 pools updated in 237.2439ms
+[94m[01:18:51.115][0m[[32mINFO[0m] [MarketState] Block 84191720 processed: 7 pools updated in 227.641ms
+[94m[01:18:51.399][0m[[32mINFO[0m] [MarketState] Block 84191721 processed: 0 pools updated in 72.5971ms
+[94m[01:18:51.982][0m[[32mINFO[0m] [MarketState] Block 84191722 processed: 6 pools updated in 194.756ms
+[94m[01:18:52.490][0m[[32mINFO[0m] [MarketState] Block 84191723 processed: 5 pools updated in 249.5719ms
+[94m[01:18:52.820][0m[[32mINFO[0m] [MarketState] Block 84191724 processed: 2 pools updated in 163.9098ms
+[94m[01:18:53.381][0m[[32mINFO[0m] [MarketState] Block 84191725 processed: 6 pools updated in 263.9279ms
+[94m[01:18:53.808][0m[[32mINFO[0m] [MarketState] Block 84191726 processed: 5 pools updated in 217.4125ms
+[94m[01:18:54.357][0m[[32mINFO[0m] [MarketState] Block 84191727 processed: 4 pools updated in 289.6447ms
+[94m[01:18:54.674][0m[[32mINFO[0m] [MarketState] Block 84191728 processed: 4 pools updated in 168.5536ms
+[94m[01:18:55.177][0m[[32mINFO[0m] [MarketState] Block 84191729 processed: 9 pools updated in 201.2355ms
+[94m[01:18:55.608][0m[[32mINFO[0m] [MarketState] Block 84191730 processed: 10 pools updated in 194.9156ms
+[94m[01:18:56.114][0m[[32mINFO[0m] [MarketState] Block 84191731 processed: 6 pools updated in 239.7326ms
+[94m[01:18:56.560][0m[[32mINFO[0m] [MarketState] Block 84191732 processed: 2 pools updated in 241.4261ms
+[94m[01:18:56.991][0m[[32mINFO[0m] [MarketState] Block 84191733 processed: 6 pools updated in 221.5035ms
+[94m[01:18:57.698][0m[[32mINFO[0m] [MarketState] Block 84191734 processed: 6 pools updated in 461.653ms
+[94m[01:18:57.995][0m[[32mINFO[0m] [MarketState] Block 84191735 processed: 5 pools updated in 295.8323ms
+[94m[01:18:58.342][0m[[32mINFO[0m] [MarketState] Block 84191736 processed: 3 pools updated in 211.6006ms
+[94m[01:18:58.816][0m[[32mINFO[0m] [MarketState] Block 84191737 processed: 4 pools updated in 225.359ms
+[94m[01:18:59.248][0m[[32mINFO[0m] [MarketState] Block 84191738 processed: 7 pools updated in 219.0261ms
+[94m[01:18:59.668][0m[[32mINFO[0m] [MarketState] Block 84191739 processed: 4 pools updated in 192.8299ms
+[94m[01:19:00.024][0m[[32mINFO[0m] [MarketState] Block 84191740 processed: 0 pools updated in 75.9742ms
+[94m[01:19:00.581][0m[[32mINFO[0m] [MarketState] Block 84191741 processed: 1 pools updated in 193.126ms
+[94m[01:19:01.073][0m[[32mINFO[0m] [MarketState] Block 84191742 processed: 9 pools updated in 229.6292ms
+[94m[01:19:01.555][0m[[32mINFO[0m] [MarketState] Block 84191743 processed: 3 pools updated in 218.6463ms
+[94m[01:19:01.937][0m[[32mINFO[0m] [MarketState] Block 84191744 processed: 5 pools updated in 250.4756ms
+[94m[01:19:02.411][0m[[32mINFO[0m] [MarketState] Block 84191745 processed: 5 pools updated in 271.803ms
+[94m[01:19:02.815][0m[[32mINFO[0m] [MarketState] Block 84191746 processed: 3 pools updated in 225.6036ms
+[94m[01:19:03.194][0m[[32mINFO[0m] [MarketState] Block 84191747 processed: 5 pools updated in 130.2043ms
+[94m[01:19:03.633][0m[[32mINFO[0m] [MarketState] Block 84191748 processed: 2 pools updated in 147.372ms
+[94m[01:19:04.212][0m[[32mINFO[0m] [MarketState] Block 84191749 processed: 8 pools updated in 233.6045ms
+[94m[01:19:04.653][0m[[32mINFO[0m] [MarketState] Block 84191750 processed: 14 pools updated in 221.563ms
+[94m[01:19:05.064][0m[[32mINFO[0m] [MarketState] Block 84191751 processed: 3 pools updated in 210.8446ms
+[94m[01:19:05.556][0m[[32mINFO[0m] [MarketState] Block 84191752 processed: 5 pools updated in 219.0639ms
+[94m[01:19:06.062][0m[[32mINFO[0m] [MarketState] Block 84191753 processed: 3 pools updated in 237.0909ms
+[94m[01:19:06.473][0m[[32mINFO[0m] [MarketState] Block 84191754 processed: 4 pools updated in 234.5827ms
+[94m[01:19:06.949][0m[[32mINFO[0m] [MarketState] Block 84191755 processed: 1 pools updated in 263.8489ms
+[94m[01:19:07.400][0m[[32mINFO[0m] [MarketState] Block 84191756 processed: 3 pools updated in 222.5406ms
+[94m[01:19:07.805][0m[[32mINFO[0m] [MarketState] Block 84191757 processed: 3 pools updated in 249.4008ms
+[94m[01:19:08.233][0m[[32mINFO[0m] [MarketState] Block 84191758 processed: 2 pools updated in 194.3972ms
+[94m[01:19:08.668][0m[[32mINFO[0m] [MarketState] Block 84191759 processed: 7 pools updated in 201.1124ms
+[94m[01:19:09.113][0m[[32mINFO[0m] [MarketState] Block 84191760 processed: 4 pools updated in 238.4772ms
+[94m[01:19:09.556][0m[[32mINFO[0m] [MarketState] Block 84191761 processed: 7 pools updated in 211.9605ms
+[94m[01:19:09.970][0m[[32mINFO[0m] [MarketState] Block 84191762 processed: 3 pools updated in 189.0716ms
+[94m[01:19:10.449][0m[[32mINFO[0m] [MarketState] Block 84191763 processed: 4 pools updated in 226.5511ms
+[94m[01:19:10.655][0m[[32mINFO[0m] [Mempool] Stats: 20193 total pending txs, 285 DEX swaps, 79 pools forwarded
+[94m[01:19:10.874][0m[[32mINFO[0m] [MarketState] Block 84191764 processed: 3 pools updated in 210.9871ms
+[94m[01:19:11.379][0m[[32mINFO[0m] [MarketState] Block 84191765 processed: 8 pools updated in 238.11ms
+[94m[01:19:11.872][0m[[32mINFO[0m] [MarketState] Block 84191766 processed: 5 pools updated in 270.3779ms
+[94m[01:19:12.246][0m[[32mINFO[0m] [MarketState] Block 84191767 processed: 2 pools updated in 227.2001ms
+[94m[01:19:12.698][0m[[32mINFO[0m] [MarketState] Block 84191768 processed: 6 pools updated in 216.6864ms
+[94m[01:19:13.114][0m[[32mINFO[0m] [MarketState] Block 84191769 processed: 2 pools updated in 199.6212ms
+[94m[01:19:13.585][0m[[32mINFO[0m] [MarketState] Block 84191770 processed: 1 pools updated in 213.8845ms
+[94m[01:19:14.041][0m[[32mINFO[0m] [MarketState] Block 84191771 processed: 3 pools updated in 226.2249ms
+[94m[01:19:14.493][0m[[32mINFO[0m] [MarketState] Block 84191772 processed: 8 pools updated in 221.964ms
+[94m[01:19:14.930][0m[[32mINFO[0m] [MarketState] Block 84191773 processed: 3 pools updated in 218.31ms
+[94m[01:19:15.393][0m[[32mINFO[0m] [MarketState] Block 84191774 processed: 4 pools updated in 219.9172ms
+[94m[01:19:15.854][0m[[32mINFO[0m] [MarketState] Block 84191775 processed: 6 pools updated in 234.9847ms
+[94m[01:19:16.398][0m[[32mINFO[0m] [MarketState] Block 84191776 processed: 6 pools updated in 211.0399ms
+[94m[01:19:16.669][0m[[32mINFO[0m] [MarketState] Block 84191777 processed: 0 pools updated in 74.1047ms
+[94m[01:19:17.268][0m[[32mINFO[0m] [MarketState] Block 84191778 processed: 4 pools updated in 246.6481ms
+[94m[01:19:17.641][0m[[32mINFO[0m] [MarketState] Block 84191779 processed: 6 pools updated in 179.0032ms
+[94m[01:19:17.991][0m[[32mINFO[0m] [MarketState] Block 84191780 processed: 0 pools updated in 64.1262ms
+[94m[01:19:18.562][0m[[32mINFO[0m] [MarketState] Block 84191781 processed: 3 pools updated in 218.9517ms
+[94m[01:19:19.051][0m[[32mINFO[0m] [MarketState] Block 84191782 processed: 3 pools updated in 259.5424ms
+[94m[01:19:19.380][0m[[32mINFO[0m] [MarketState] Block 84191783 processed: 2 pools updated in 130.3138ms
+[94m[01:19:19.869][0m[[32mINFO[0m] [MarketState] Block 84191784 processed: 2 pools updated in 163.7259ms
+[94m[01:19:20.356][0m[[32mINFO[0m] [MarketState] Block 84191785 processed: 4 pools updated in 216.4708ms
+[94m[01:19:20.772][0m[[32mINFO[0m] [MarketState] Block 84191786 processed: 4 pools updated in 185.9293ms
+[94m[01:19:21.128][0m[[32mINFO[0m] [MarketState] Block 84191787 processed: 0 pools updated in 60.2284ms
+[94m[01:19:21.712][0m[[32mINFO[0m] [MarketState] Block 84191788 processed: 2 pools updated in 194.7117ms
+[94m[01:19:22.138][0m[[32mINFO[0m] [MarketState] Block 84191789 processed: 1 pools updated in 185.8698ms
+[94m[01:19:22.522][0m[[32mINFO[0m] [MarketState] Block 84191790 processed: 2 pools updated in 125.8773ms
+[94m[01:19:23.091][0m[[32mINFO[0m] [MarketState] Block 84191791 processed: 4 pools updated in 232.7488ms
+[94m[01:19:23.587][0m[[32mINFO[0m] [MarketState] Block 84191792 processed: 6 pools updated in 225.483ms
+[94m[01:19:24.059][0m[[32mINFO[0m] [MarketState] Block 84191793 processed: 1 pools updated in 268.5382ms
+[94m[01:19:24.506][0m[[32mINFO[0m] [MarketState] Block 84191794 processed: 2 pools updated in 272.2632ms
+[94m[01:19:24.893][0m[[32mINFO[0m] [MarketState] Block 84191795 processed: 4 pools updated in 215.1596ms
+[94m[01:19:25.301][0m[[32mINFO[0m] [MarketState] Block 84191796 processed: 1 pools updated in 183.413ms
+[94m[01:19:25.840][0m[[32mINFO[0m] [MarketState] Block 84191797 processed: 2 pools updated in 244.8484ms
+[94m[01:19:26.237][0m[[32mINFO[0m] [MarketState] Block 84191798 processed: 3 pools updated in 223.4069ms
+[94m[01:19:26.548][0m[[32mINFO[0m] [MarketState] Block 84191799 processed: 0 pools updated in 67.9708ms
+[94m[01:19:26.969][0m[[32mINFO[0m] [MarketState] Block 84191800 processed: 0 pools updated in 69.3194ms
+[94m[01:19:27.411][0m[[32mINFO[0m] [MarketState] Block 84191801 processed: 0 pools updated in 67.5737ms
+[94m[01:19:27.969][0m[[32mINFO[0m] [MarketState] Block 84191802 processed: 2 pools updated in 177.5773ms
+[94m[01:19:28.469][0m[[32mINFO[0m] [MarketState] Block 84191803 processed: 1 pools updated in 221.6732ms
+[94m[01:19:28.944][0m[[32mINFO[0m] [MarketState] Block 84191804 processed: 2 pools updated in 223.5916ms
+[94m[01:19:29.310][0m[[32mINFO[0m] [MarketState] Block 84191805 processed: 1 pools updated in 182.0857ms
+[94m[01:19:29.802][0m[[32mINFO[0m] [MarketState] Block 84191806 processed: 2 pools updated in 212.7615ms
+[94m[01:19:30.223][0m[[32mINFO[0m] [MarketState] Block 84191807 processed: 3 pools updated in 153.649ms
+[94m[01:19:30.712][0m[[32mINFO[0m] [MarketState] Block 84191808 processed: 2 pools updated in 181.0028ms
+[94m[01:19:31.116][0m[[32mINFO[0m] [MarketState] Block 84191809 processed: 1 pools updated in 139.5054ms
+[94m[01:19:31.668][0m[[32mINFO[0m] [MarketState] Block 84191810 processed: 4 pools updated in 219.6346ms
+[94m[01:19:32.081][0m[[32mINFO[0m] [MarketState] Block 84191811 processed: 4 pools updated in 204.4071ms
+[94m[01:19:32.451][0m[[32mINFO[0m] [MarketState] Block 84191812 processed: 2 pools updated in 126.3629ms
+[94m[01:19:32.856][0m[[32mINFO[0m] [MarketState] Block 84191813 processed: 0 pools updated in 76.5076ms
+[94m[01:19:33.408][0m[[32mINFO[0m] [MarketState] Block 84191814 processed: 1 pools updated in 161.8326ms
+[94m[01:19:33.921][0m[[32mINFO[0m] [MarketState] Block 84191815 processed: 1 pools updated in 245.668ms
+[94m[01:19:34.315][0m[[32mINFO[0m] [MarketState] Block 84191816 processed: 2 pools updated in 254.1147ms
+[94m[01:19:34.722][0m[[32mINFO[0m] [MarketState] Block 84191817 processed: 2 pools updated in 201.9121ms
+[94m[01:19:35.218][0m[[32mINFO[0m] [MarketState] Block 84191818 processed: 3 pools updated in 240.489ms
+[94m[01:19:35.692][0m[[32mINFO[0m] [MarketState] Block 84191819 processed: 5 pools updated in 256.012ms
+[94m[01:19:36.121][0m[[32mINFO[0m] [MarketState] Block 84191820 processed: 2 pools updated in 268.6126ms
+[94m[01:19:36.602][0m[[32mINFO[0m] [MarketState] Block 84191821 processed: 2 pools updated in 276.2181ms
+[94m[01:19:36.843][0m[[32mINFO[0m] [MarketState] Block 84191822 processed: 0 pools updated in 82.1197ms
+[94m[01:19:37.262][0m[[32mINFO[0m] [MarketState] Block 84191823 processed: 0 pools updated in 57.3488ms
+[94m[01:19:38.003][0m[[32mINFO[0m] [MarketState] Block 84191824 processed: 3 pools updated in 278.5508ms
+[94m[01:19:38.333][0m[[32mINFO[0m] [MarketState] Block 84191825 processed: 2 pools updated in 188.1259ms
+[94m[01:19:38.867][0m[[32mINFO[0m] [MarketState] Block 84191826 processed: 3 pools updated in 251.6106ms
+[94m[01:19:39.262][0m[[32mINFO[0m] [MarketState] Block 84191827 processed: 3 pools updated in 180.0813ms
+[94m[01:19:39.680][0m[[32mINFO[0m] [MarketState] Block 84191828 processed: 1 pools updated in 195.6934ms
+[94m[01:19:40.208][0m[[32mINFO[0m] [MarketState] Block 84191829 processed: 1 pools updated in 249.5987ms
+[94m[01:19:40.546][0m[[32mINFO[0m] [MarketState] Block 84191830 processed: 1 pools updated in 139.2434ms
+[94m[01:19:40.986][0m[[32mINFO[0m] [MarketState] Block 84191831 processed: 1 pools updated in 129.662ms
+[94m[01:19:41.459][0m[[32mINFO[0m] [Mempool] Stats: 22622 total pending txs, 322 DEX swaps, 79 pools forwarded
+[94m[01:19:41.461][0m[[32mINFO[0m] [MarketState] Block 84191832 processed: 6 pools updated in 200.2809ms
+[94m[01:19:41.917][0m[[32mINFO[0m] [MarketState] Block 84191833 processed: 4 pools updated in 192.9103ms
+[94m[01:19:42.410][0m[[32mINFO[0m] [MarketState] Block 84191834 processed: 2 pools updated in 238.5235ms
+[94m[01:19:42.679][0m[[32mINFO[0m] [MarketState] Block 84191835 processed: 0 pools updated in 72.5313ms
+[94m[01:19:43.205][0m[[32mINFO[0m] [MarketState] Block 84191836 processed: 3 pools updated in 144.5525ms
+[94m[01:19:43.597][0m[[32mINFO[0m] [MarketState] Block 84191837 processed: 0 pools updated in 77.1065ms
+[94m[01:19:44.204][0m[[32mINFO[0m] [MarketState] Block 84191838 processed: 2 pools updated in 240.9006ms
+[94m[01:19:44.659][0m[[32mINFO[0m] [MarketState] Block 84191839 processed: 2 pools updated in 228.8519ms
+[94m[01:19:45.185][0m[[32mINFO[0m] [MarketState] Block 84191840 processed: 2 pools updated in 244.1545ms
+[94m[01:19:45.824][0m[[32mINFO[0m] [MarketState] Block 84191841 processed: 4 pools updated in 485.3039ms
+[94m[01:19:45.953][0m[[32mINFO[0m] [MarketState] Block 84191842 processed: 1 pools updated in 125.9626ms
+[94m[01:19:46.425][0m[[32mINFO[0m] [MarketState] Block 84191843 processed: 2 pools updated in 174.4639ms
+[94m[01:19:46.920][0m[[32mINFO[0m] [MarketState] Block 84191844 processed: 3 pools updated in 215.4112ms
+[94m[01:19:47.371][0m[[32mINFO[0m] [MarketState] Block 84191845 processed: 1 pools updated in 221.1887ms
+[94m[01:19:47.661][0m[[32mINFO[0m] [MarketState] Block 84191846 processed: 0 pools updated in 69.8164ms
+[94m[01:19:48.147][0m[[32mINFO[0m] [MarketState] Block 84191847 processed: 0 pools updated in 89.0111ms
+[94m[01:19:48.714][0m[[32mINFO[0m] [MarketState] Block 84191848 processed: 3 pools updated in 194.2926ms
+[94m[01:19:49.158][0m[[32mINFO[0m] [MarketState] Block 84191849 processed: 3 pools updated in 202.9003ms
+[94m[01:19:49.657][0m[[32mINFO[0m] [MarketState] Block 84191850 processed: 5 pools updated in 270.0232ms
+[94m[01:19:50.061][0m[[32mINFO[0m] [MarketState] Block 84191851 processed: 4 pools updated in 199.0446ms
+[94m[01:19:50.453][0m[[32mINFO[0m] [MarketState] Block 84191852 processed: 2 pools updated in 165.3993ms
+[94m[01:19:50.874][0m[[32mINFO[0m] [MarketState] Block 84191853 processed: 1 pools updated in 136.9088ms
+[94m[01:19:51.399][0m[[32mINFO[0m] [MarketState] Block 84191854 processed: 4 pools updated in 201.9621ms
+[94m[01:19:51.895][0m[[32mINFO[0m] [MarketState] Block 84191855 processed: 6 pools updated in 235.7152ms
+[94m[01:19:52.299][0m[[32mINFO[0m] [MarketState] Block 84191856 processed: 4 pools updated in 233.7753ms
+[94m[01:19:52.794][0m[[32mINFO[0m] [MarketState] Block 84191857 processed: 6 pools updated in 228.7402ms
+[94m[01:19:53.224][0m[[32mINFO[0m] [MarketState] Block 84191858 processed: 8 pools updated in 239.8102ms
+[94m[01:19:53.626][0m[[32mINFO[0m] [MarketState] Block 84191859 processed: 3 pools updated in 224.8048ms
+[94m[01:19:54.082][0m[[32mINFO[0m] [MarketState] Block 84191860 processed: 8 pools updated in 191.0378ms
+[94m[01:19:54.542][0m[[32mINFO[0m] [MarketState] Block 84191861 processed: 11 pools updated in 214.5389ms
+[94m[01:19:55.020][0m[[32mINFO[0m] [MarketState] Block 84191862 processed: 12 pools updated in 230.3943ms
+[94m[01:19:55.474][0m[[32mINFO[0m] [MarketState] Block 84191863 processed: 9 pools updated in 226.7664ms
+[94m[01:19:55.992][0m[[32mINFO[0m] [MarketState] Block 84191864 processed: 7 pools updated in 197.7323ms
+[94m[01:19:56.431][0m[[32mINFO[0m] [MarketState] Block 84191865 processed: 6 pools updated in 226.1118ms
+[94m[01:19:56.903][0m[[32mINFO[0m] [MarketState] Block 84191866 processed: 6 pools updated in 247.6556ms
+[94m[01:19:57.360][0m[[32mINFO[0m] [MarketState] Block 84191867 processed: 11 pools updated in 264.8039ms
+[94m[01:19:57.732][0m[[32mINFO[0m] [MarketState] Block 84191868 processed: 5 pools updated in 195.9695ms
+[94m[01:19:58.249][0m[[32mINFO[0m] [MarketState] Block 84191869 processed: 9 pools updated in 194.5686ms
+[94m[01:19:58.727][0m[[32mINFO[0m] [MarketState] Block 84191870 processed: 21 pools updated in 235.2501ms
+[94m[01:19:59.016][0m[[32mINFO[0m] [MarketState] Block 84191871 processed: 1 pools updated in 126.7919ms
+[94m[01:19:59.607][0m[[32mINFO[0m] [MarketState] Block 84191872 processed: 3 pools updated in 257.0077ms
+[94m[01:20:00.024][0m[[32mINFO[0m] [MarketState] Block 84191873 processed: 7 pools updated in 202.6077ms
+[94m[01:20:00.353][0m[[32mINFO[0m] [MarketState] Block 84191874 processed: 1 pools updated in 125.516ms
+[94m[01:20:00.916][0m[[32mINFO[0m] [MarketState] Block 84191875 processed: 5 pools updated in 214.6829ms
+[94m[01:20:01.363][0m[[32mINFO[0m] [MarketState] Block 84191876 processed: 9 pools updated in 225.9124ms
+[94m[01:20:01.822][0m[[32mINFO[0m] [MarketState] Block 84191877 processed: 12 pools updated in 220.5559ms
+[94m[01:20:02.239][0m[[32mINFO[0m] [MarketState] Block 84191878 processed: 6 pools updated in 237.6436ms
+[94m[01:20:02.710][0m[[32mINFO[0m] [MarketState] Block 84191879 processed: 5 pools updated in 216.9325ms
+[94m[01:20:03.052][0m[[32mINFO[0m] [MarketState] Block 84191880 processed: 3 pools updated in 155.9061ms
+[94m[01:20:03.570][0m[[32mINFO[0m] [MarketState] Block 84191881 processed: 4 pools updated in 214.8334ms
+[94m[01:20:03.995][0m[[32mINFO[0m] [MarketState] Block 84191882 processed: 3 pools updated in 181.8292ms
+[94m[01:20:04.063][0m[[35mDEBUG[0m] [Simulator] path b4d6729d7a983e5b not viable: min_input=10000000000000000 gives out=3753684
+[94m[01:20:04.064][0m[[35mDEBUG[0m] [Simulator-1] Path b4d6729d7a983e5b not profitable
+[94m[01:20:04.388][0m[[35mDEBUG[0m] [Simulator] path 3e246660dc9d8045 not viable: min_input=10000000000000000 gives out=1189992
+[94m[01:20:04.390][0m[[35mDEBUG[0m] [Simulator-3] Path 3e246660dc9d8045 not profitable
+[94m[01:20:04.465][0m[[32mINFO[0m] [MarketState] Block 84191883 processed: 6 pools updated in 195.3914ms
+[94m[01:20:04.967][0m[[32mINFO[0m] [MarketState] Block 84191884 processed: 4 pools updated in 245.721ms
+[94m[01:20:05.369][0m[[32mINFO[0m] [MarketState] Block 84191885 processed: 2 pools updated in 207.2962ms
+[94m[01:20:05.812][0m[[32mINFO[0m] [MarketState] Block 84191886 processed: 3 pools updated in 193.9104ms
+[94m[01:20:05.991][0m[[35mDEBUG[0m] [Simulator] path 2cde2fbafdc9f7c5 not viable: min_input=10000000000000000 gives out=2330973659
+[94m[01:20:05.992][0m[[35mDEBUG[0m] [Simulator-4] Path 2cde2fbafdc9f7c5 not profitable
+[94m[01:20:06.323][0m[[32mINFO[0m] [MarketState] Block 84191887 processed: 3 pools updated in 253.5168ms
+[94m[01:20:06.665][0m[[32mINFO[0m] [MarketState] Block 84191888 processed: 2 pools updated in 121.3069ms
+[94m[01:20:07.182][0m[[32mINFO[0m] [MarketState] Block 84191889 processed: 3 pools updated in 244.5531ms
+[94m[01:20:07.675][0m[[32mINFO[0m] [MarketState] Block 84191890 processed: 2 pools updated in 181.3425ms
+[94m[01:20:08.149][0m[[32mINFO[0m] [MarketState] Block 84191891 processed: 8 pools updated in 269.4451ms

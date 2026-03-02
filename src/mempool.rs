@@ -42,6 +42,23 @@ const SWAP_EXACT_TOKENS_FOR_ETH: [u8; 4] = [0x18, 0xcb, 0xaf, 0xe5];
 const SWAP_EXACT_TOKENS_FOR_TOKENS_FEE: [u8; 4] = [0x5c, 0x11, 0xd7, 0x95];
 const SWAP_EXACT_TOKENS_FOR_ETH_FEE: [u8; 4] = [0x79, 0x1a, 0xc9, 0x47];
 
+// ── V3 swap function selectors ──────────────────────────────────────────────
+// exactInputSingle((address,address,uint24,address,uint256,uint256,uint160))
+const EXACT_INPUT_SINGLE: [u8; 4] = [0x41, 0x4b, 0xf3, 0x89];
+// exactInput((bytes,address,uint256,uint256,uint256))
+const EXACT_INPUT: [u8; 4] = [0xc0, 0x4b, 0x8d, 0x59];
+// exactOutputSingle((address,address,uint24,address,uint256,uint256,uint160))
+const EXACT_OUTPUT_SINGLE: [u8; 4] = [0xdb, 0x3e, 0x21, 0x98];
+// exactOutput((bytes,address,uint256,uint256,uint256))
+const EXACT_OUTPUT: [u8; 4] = [0xf2, 0x8c, 0x04, 0x98];
+// PancakeSwap V3 SmartRouter: exactInputSingle variant
+// exactInputSingleV3((address,address,uint24,address,uint256,uint256,uint160))
+const EXACT_INPUT_SINGLE_V3_ALT: [u8; 4] = [0x04, 0xe4, 0x5a, 0xaf];
+// multicall(uint256,bytes[])
+const MULTICALL_DEADLINE: [u8; 4] = [0x5a, 0xe4, 0x01, 0xdc];
+// multicall(bytes[])
+const MULTICALL_NO_DEADLINE: [u8; 4] = [0xac, 0x96, 0x50, 0xd8];
+
 /// Extract token addresses from V2 swap calldata.
 ///
 /// Returns the token path (e.g. `[WBNB, USDT, BUSD]`) or `None` if the calldata
@@ -107,6 +124,219 @@ fn decode_v2_swap_path(calldata: &[u8]) -> Option<Vec<Address>> {
     }
 
     Some(addrs)
+}
+
+/// Extract token pair from V3 `exactInputSingle` / `exactOutputSingle` calldata.
+///
+/// ABI: (address tokenIn, address tokenOut, uint24 fee, address recipient, ...)
+/// The first two 32-byte words after the selector contain tokenIn and tokenOut.
+fn decode_v3_single_swap(calldata: &[u8]) -> Option<Vec<Address>> {
+    // selector(4) + tokenIn(32) + tokenOut(32) = 68 bytes minimum
+    if calldata.len() < 68 {
+        return None;
+    }
+    let token_in = Address::from_slice(&calldata[4 + 12..4 + 32]);
+    let token_out = Address::from_slice(&calldata[4 + 32 + 12..4 + 64]);
+    Some(vec![token_in, token_out])
+}
+
+/// Extract token pairs from V3 `exactInput` / `exactOutput` calldata.
+///
+/// The `path` is a packed encoding of (address, uint24, address, uint24, ..., address).
+/// Each address is 20 bytes, each fee is 3 bytes. So each hop is 23 bytes, and the
+/// total path length = 20 + num_hops * 23.
+///
+/// For `exactInput`: ABI is (bytes path, address recipient, uint256 deadline,
+///                           uint256 amountIn, uint256 amountOutMinimum)
+/// The `path` bytes are at a dynamic offset in the first tuple element.
+fn decode_v3_multi_swap(calldata: &[u8]) -> Option<Vec<Address>> {
+    // The struct is ABI-encoded as a tuple:
+    //   word 0: offset to path bytes (dynamic)
+    //   word 1: recipient
+    //   word 2: deadline (or amountIn depending on variant)
+    //   ...
+    // At the offset: length(32) + path_data
+    if calldata.len() < 4 + 32 {
+        return None;
+    }
+
+    // Read offset to the path bytes
+    let offset_bytes: [u8; 32] = calldata[4..4 + 32].try_into().ok()?;
+    let offset = u64::from_be_bytes(offset_bytes[24..32].try_into().ok()?) as usize;
+
+    let path_start = 4 + offset;
+    if calldata.len() < path_start + 32 {
+        return None;
+    }
+
+    // Read path length
+    let len_bytes: [u8; 32] = calldata[path_start..path_start + 32].try_into().ok()?;
+    let path_len = u64::from_be_bytes(len_bytes[24..32].try_into().ok()?) as usize;
+
+    let data_start = path_start + 32;
+    if calldata.len() < data_start + path_len {
+        return None;
+    }
+    let path_data = &calldata[data_start..data_start + path_len];
+
+    decode_v3_path_bytes(path_data)
+}
+
+/// Decode packed V3 path bytes: (addr20, fee3, addr20, fee3, ..., addr20).
+fn decode_v3_path_bytes(path: &[u8]) -> Option<Vec<Address>> {
+    // Minimum path: 2 addresses + 1 fee = 20 + 3 + 20 = 43 bytes
+    if path.len() < 43 {
+        return None;
+    }
+
+    let mut addrs = Vec::new();
+    let mut pos = 0;
+
+    // First address
+    if pos + 20 > path.len() {
+        return None;
+    }
+    addrs.push(Address::from_slice(&path[pos..pos + 20]));
+    pos += 20;
+
+    // Each subsequent hop: 3 bytes fee + 20 bytes address
+    while pos + 23 <= path.len() {
+        pos += 3; // skip fee tier
+        addrs.push(Address::from_slice(&path[pos..pos + 20]));
+        pos += 20;
+    }
+
+    if addrs.len() >= 2 {
+        Some(addrs)
+    } else {
+        None
+    }
+}
+
+/// Try to extract token addresses from multicall calldata.
+///
+/// multicall wraps multiple sub-calls. We decode each sub-call and collect
+/// all token addresses from V3 swap sub-calls.
+fn decode_multicall_swaps(calldata: &[u8]) -> Option<Vec<Address>> {
+    if calldata.len() < 4 {
+        return None;
+    }
+    let selector: [u8; 4] = calldata[..4].try_into().ok()?;
+
+    // Determine where the bytes[] array offset is
+    let array_offset_word = match selector {
+        MULTICALL_DEADLINE => 1,    // multicall(uint256 deadline, bytes[] data) → skip 1 word
+        MULTICALL_NO_DEADLINE => 0, // multicall(bytes[] data) → first word is offset
+        _ => return None,
+    };
+
+    let off_start = 4 + array_offset_word * 32;
+    if calldata.len() < off_start + 32 {
+        return None;
+    }
+
+    // Read the offset to the bytes[] array
+    let offset_bytes: [u8; 32] = calldata[off_start..off_start + 32].try_into().ok()?;
+    let offset = u64::from_be_bytes(offset_bytes[24..32].try_into().ok()?) as usize;
+
+    let arr_start = 4 + offset;
+    if calldata.len() < arr_start + 32 {
+        return None;
+    }
+
+    // Read array length
+    let len_bytes: [u8; 32] = calldata[arr_start..arr_start + 32].try_into().ok()?;
+    let num_calls = u64::from_be_bytes(len_bytes[24..32].try_into().ok()?) as usize;
+
+    if num_calls == 0 || num_calls > 20 {
+        return None; // sanity
+    }
+
+    let mut all_tokens = Vec::new();
+
+    // Read each sub-call's offset and decode it
+    for i in 0..num_calls {
+        let elem_off_pos = arr_start + 32 + i * 32;
+        if calldata.len() < elem_off_pos + 32 {
+            break;
+        }
+        let elem_off_bytes: [u8; 32] = calldata[elem_off_pos..elem_off_pos + 32]
+            .try_into()
+            .ok()?;
+        let elem_offset =
+            u64::from_be_bytes(elem_off_bytes[24..32].try_into().ok()?) as usize;
+
+        let elem_start = arr_start + 32 + elem_offset;
+        if calldata.len() < elem_start + 32 {
+            break;
+        }
+
+        // Read sub-call data length
+        let sub_len_bytes: [u8; 32] = calldata[elem_start..elem_start + 32]
+            .try_into()
+            .ok()?;
+        let sub_len =
+            u64::from_be_bytes(sub_len_bytes[24..32].try_into().ok()?) as usize;
+
+        let sub_data_start = elem_start + 32;
+        if calldata.len() < sub_data_start + sub_len || sub_len < 4 {
+            continue;
+        }
+        let sub_call = &calldata[sub_data_start..sub_data_start + sub_len];
+
+        // Try to decode the sub-call as a V3 swap
+        let sub_sel: [u8; 4] = sub_call[..4].try_into().ok()?;
+        let tokens = match sub_sel {
+            EXACT_INPUT_SINGLE | EXACT_OUTPUT_SINGLE | EXACT_INPUT_SINGLE_V3_ALT => {
+                decode_v3_single_swap(sub_call)
+            }
+            EXACT_INPUT | EXACT_OUTPUT => decode_v3_multi_swap(sub_call),
+            // Also try V2 selectors inside multicall
+            SWAP_EXACT_TOKENS_FOR_TOKENS
+            | SWAP_TOKENS_FOR_EXACT_TOKENS
+            | SWAP_EXACT_ETH_FOR_TOKENS
+            | SWAP_EXACT_TOKENS_FOR_ETH
+            | SWAP_EXACT_TOKENS_FOR_TOKENS_FEE
+            | SWAP_EXACT_TOKENS_FOR_ETH_FEE => decode_v2_swap_path(sub_call),
+            _ => None,
+        };
+        if let Some(toks) = tokens {
+            all_tokens.extend(toks);
+        }
+    }
+
+    if all_tokens.is_empty() {
+        None
+    } else {
+        Some(all_tokens)
+    }
+}
+
+/// Try all known swap decoders on calldata. Returns token path if recognized.
+fn decode_any_swap(calldata: &[u8]) -> Option<Vec<Address>> {
+    if calldata.len() < 4 {
+        return None;
+    }
+    let selector: [u8; 4] = calldata[..4].try_into().ok()?;
+
+    match selector {
+        // V2 swaps
+        SWAP_EXACT_TOKENS_FOR_TOKENS
+        | SWAP_TOKENS_FOR_EXACT_TOKENS
+        | SWAP_EXACT_ETH_FOR_TOKENS
+        | SWAP_EXACT_TOKENS_FOR_ETH
+        | SWAP_EXACT_TOKENS_FOR_TOKENS_FEE
+        | SWAP_EXACT_TOKENS_FOR_ETH_FEE => decode_v2_swap_path(calldata),
+        // V3 single swaps
+        EXACT_INPUT_SINGLE | EXACT_OUTPUT_SINGLE | EXACT_INPUT_SINGLE_V3_ALT => {
+            decode_v3_single_swap(calldata)
+        }
+        // V3 multi-hop swaps
+        EXACT_INPUT | EXACT_OUTPUT => decode_v3_multi_swap(calldata),
+        // Multicall wrappers (V3 router / SmartRouter)
+        MULTICALL_DEADLINE | MULTICALL_NO_DEADLINE => decode_multicall_swaps(calldata),
+        _ => None,
+    }
 }
 
 /// Subscribe to pending transactions and send detected DEX swap pool touches
@@ -178,9 +408,9 @@ pub async fn stream_pending_swaps(
 
         dex_swaps += 1;
 
-        // Decode V2 swap calldata to extract token path
+        // Decode swap calldata (V2, V3, or multicall) to extract token path
         let calldata = tx.input().as_ref();
-        if let Some(token_path) = decode_v2_swap_path(calldata) {
+        if let Some(token_path) = decode_any_swap(calldata) {
             // Map consecutive token pairs to pool addresses
             let mut affected_pools = Vec::new();
             for pair in token_path.windows(2) {

@@ -1,9 +1,2 @@
-﻿[toxic_tokens]
-addresses = [
-  "0x570a5d26f7765ecb712c0924e4de545b89fd43df",
-  "0x7ede72bbaa15edd455b3a009759cf6075d819784",
-  "0x85e43bf8faaf04ceddcd03d6c07438b72606a988",
-  "0xcfb70a4f8a3665e7c4d12f903cbd5046a541d887",
-  "0xe9e7cea3dedca5984780bafc599bd69add087d56",
-  "0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d",
-]
+[toxic_tokens]
+addresses = []

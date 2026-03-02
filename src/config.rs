@@ -299,17 +299,7 @@ pub struct ExecutionConfig {
     /// Unified strike threshold for path/token blacklisting.
     #[serde(default = "default_strike_threshold")]
     pub strike_threshold: u32,
-    /// Maximum number of paths forwarded to simulators per block.
-    /// Paths are sorted by estimated profit (descending) so only the top candidates
-    /// reach REVM.  Rule-of-thumb: (block_time_ms / revm_ms_per_path) * num_simulators.
-    /// BSC: ~400ms / ~185ms × 8 workers ≈ 17; default 16 keeps sims within one block.
-    #[serde(default = "default_max_sim_paths")]
-    pub max_sim_paths: usize,
-    /// Simulator stale-block tolerance: paths from blocks older than
-    /// (latest_seen - sim_stale_blocks) are discarded without simulation.
-    /// BSC: 1 is correct (400ms blocks). Increase for slower chains.
-    #[serde(default = "default_sim_stale_blocks")]
-    pub sim_stale_blocks: u64,
+
 }
 
 impl Default for ExecutionConfig {
@@ -340,8 +330,6 @@ impl Default for ExecutionConfig {
             enable_mempool: false,
             max_stale_blocks: default_max_stale_blocks(),
             strike_threshold: default_strike_threshold(),
-            max_sim_paths: default_max_sim_paths(),
-            sim_stale_blocks: default_sim_stale_blocks(),
         }
     }
 }
@@ -377,8 +365,8 @@ fn default_flash_loan_fee_uniswap_v3_bps() -> u64 { 0 }
 fn default_flash_loan_fee_pancakeswap_v3_bps() -> u64 { 0 }
 fn default_max_stale_blocks() -> u64 { 3 }
 fn default_strike_threshold() -> u32 { 3 }
-fn default_max_sim_paths() -> usize { 16 }
-fn default_sim_stale_blocks() -> u64 { 1 }
+
+
 
 /// Chain-specific EIP-1559 base-fee prediction parameters.
 /// These values vary by chain and must match on-chain protocol constants.
