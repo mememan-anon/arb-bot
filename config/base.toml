@@ -1,5 +1,4 @@
-arbitrage_enabled = false
-address_file = "addresses/base.toml"
+﻿address_file = "addresses/base.toml"
 
 [chain]
 name = "base"
@@ -7,7 +6,8 @@ chain_id = 8453
 https_url = ""
 wss_url = ""
 wss_urls = []
-cache_dir = "base"
+cache_dir = "cache/base"
+sequencer_url = "https://mainnet-sequencer.base.org"
 max_profit_pct = 50.0
 blacklisted_tokens = [
   "0x5ab3d4c385b400f3abb49e80de2faf6a88a7b691",
@@ -44,19 +44,6 @@ routers = [
 from_blocks = [0, 0]
 direct_pair = true
 
-[dexes.v3]
-enabled = false
-factories = []
-routers = []
-quoter = ""
-fee_tiers = [100, 500, 3000, 10000]
-
-[dexes.algebra]
-enabled = false
-factories = []
-routers = []
-quoter = ""
-
 [dexes.uniswapv3cl]
 enabled = true
 factory = "0x33128a8fC17869897dcE68Ed026d694621f6FDfD"
@@ -68,22 +55,20 @@ routers = [
   "0x1b81D678ffb9C0263b24A97847620C99d213eB14",
 ]
 quoter = "0x3d4e44Eb1374240CE5F1B136041212501e4a0139"
-min_liquidity = 1
 
-[dexes.uniswapv4cl]
-enabled = false
-pool_manager = "0x498581fF718922c3f8e6A244956aF099B2652b2b"
-
-[dexes.pancakeswap_infinity]
-enabled = false
-vault = "0x238a358808379702088667322f80aC48bAd5e6c4"
-cl_pool_manager = "0xa0FfB9c1CE1Fe56963B0321B32E7A0302114058b"
-bin_pool_manager = "0xC697d2898e0D09264376196696c51D7aBbbAA4a9"
-
-[dexes.lfj]
-enabled = false
-router_v22 = ""
-router_v21 = ""
+[revm_filter.routers]
+uniswapv2 = "0x4752ba5dbc23f44d87826276bf6fd6b1c372ad24"
+sushiswapv2 = "0x6BDED42c6DA8FBf0d2bA55B2fa120C5e0c8D7891"
+pancakeswapv2 = "0x8cFe327CEc66d1C090Dd72bd0FF11d690C33a2Eb"
+baseswapv2 = "0x327Df1E6de05895d2ab08513aaDD9313Fe505d86"
+alienbasev2 = "0x8c1A3cF8f83074169FE5D7aD50B978e1cD6b37c7"
+aerodrome = "0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43"
+slipstream = "0xBE6D8f0d05cC4be24d5167a3eF062215bE6D18a5"
+uniswapv3 = "0x2626664c2603336E57B271c5C0b26F421741e481"
+alienbasev3 = "0xB20C411FC84FBB27e78608C24d0056D974ea9411"
+pancakeswapv3 = "0x678Aa4bF4E210cf2166753e054d5b7c31cc7fa86"
+sushiswapv3 = "0xFB7eF66a7e61224DD6FcD0D7d9C3be5C8B049b9f"
+baseswapv3 = "0x1B8eea9315bE495187D873DA7773a874545D9D48"
 
 # Gas price token pair
 [gas]
@@ -97,203 +82,36 @@ stable_decimals = 6
 pool_address = "0xd0b53D9277642d899DF5C87A3966A349A798F224"
 token_is_token0 = true
 
+# AAVE V3 — used as Tier-3 flash loan fallback (0.05% fee) when Balancer/Morpho
+# cannot fund the debt token.  Also powers the optional Chainlink oracle for
+# start-token USD price logging.  Set default_flashloan_provider = "AaveV3" in
+# [execution] to promote this to the primary flash loan source.
 [aave_v3]
-pool = "0xA238Dd80C259a72e81d7e4664a9801593F98d1c5"
-pool_addresses_provider = "0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64D"
+pool   = "0xA238Dd80C259a72e81d7e4664a9801593F98d1c5"
 oracle = "0x2Cc0Fc26eD4563A5ce5e8bdcfe1A2878676Ae156"
-data_provider = "0x0F43731EB8d45A581f4a36DD74F5f358bc90C73A"
-ui_pool_data_provider = "0xb84A20e848baE3e13897934bB4e74E2225f4546B"
-monitoring_enabled = true
-borrowers_file = "cache/base/borrowers.txt"
-allowed_assets = [
-  "{{BASE_USDC}}",
-  "{{BASE_WETH}}",
-  "{{BASE_CBBTC}}",
-]
 
-# Base does not expose a full pending-tx stream — disable Path B to suppress warnings.
-chainlink_pending_txs = false
-
-[aave_v3.offchain_price]
-enabled = true
-dispatch_price_updates = true
-require_onchain_confirmation = true
-max_staleness_secs = 1200
-max_confidence_bps = 150
-min_rescan_interval_ms = 5000
 
 # Arbitrage executor settings
 [execution]
-enabled = true
-min_profit_threshold = 0.5
-max_position_size = 100000000.0
 use_flashloan = true
 default_flashloan_provider = "Balancer"
-max_priority_fee_gwei = 0.01
-max_base_fee_gwei = 5
-simulation_required = true
-estimated_gas = 550000
-balancer_vault = "0xBA12222222228d8Ba445958a75a0704d566BF2C8"
+max_gas_limit = 1000000          # max gas per arb tx
+profit_share_bps = 5000          # 50% of profit → priority fee
+min_submit_profit_wei = 50000000000000   # 0.00005 ETH min profit for submission
+min_sim_profit_wei = 100000000000000    # 0.0001 ETH min profit to pass simulator
+optimization_steps = 20          # binary search iterations
+min_input_eth = 0.01             # min flash-loan input (ETH)
+max_input_eth = 50.0             # max flash-loan input (ETH)
+max_hops = 4                     # max arb path length
+max_paths_per_token = 200000     # paths generated per start token at startup
+max_paths_per_block = 50000      # max paths evaluated per block
+searcher_gas_estimate = 250000   # rough gas estimate for searcher pre-screening
+flash_loan_fee_aave_bps = 5      # Aave V3 flash-loan fee (5 = 0.05%)
 
-# Liquidation executor settings
-[liquidation]
-enabled = true
-max_position_size = 100000000.0
-estimated_gas = 550000
-balancer_vault = "0xBA12222222228d8Ba445958a75a0704d566BF2C8"
-min_liquidation_profit_usd = 5.0
-# Morpho Blue on Base — checked first (0% fee, broad token coverage).
-# If Morpho holds enough of the debt token, it is preferred over Balancer.
-morpho = "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb"
-# AAVE V3 lending pool — last-resort flash-loan source (0.05% fee).
-# Only used when both Morpho and Balancer are short on the debt token.
-aave_pool = "0xA238Dd80C259a72e81d7e4664a9801593F98d1c5"
-# Opportunity log — every detected liquidation (profitable or not) is appended.
-opportunity_log = "cache/base/liquidation_opportunities.csv"
-balancer_pool_ids = [
-  "0xb7b8b3afc010169779c5c2385ec0eb0477fe3347",
-  "0x7ab124ec4029316c2a42f713828ddf2a192b36db",
-]
-
-[aave_v3.offchain_price.pyth_hermes]
-endpoint = "https://hermes.pyth.network"
-poll_interval_ms = 700
-
-[aave_v3.offchain_price.chainlink_streams]
-endpoint = "https://data.chain.link"
-poll_interval_ms = 1000
-
-[[aave_v3.offchain_price.assets]]
-asset = "{{BASE_WETH}}"
-symbol = "WETH"
-pyth_feed_id = "{{BASE_PYTH_WETH}}"
-chainlink_feed_path = "eth-usd"
-
-[[aave_v3.offchain_price.assets]]
-asset = "{{BASE_USDC}}"
-symbol = "USDC"
-pyth_feed_id = "{{BASE_PYTH_USDC}}"
-chainlink_feed_path = "usdc-usd"
-
-[[aave_v3.offchain_price.assets]]
-asset = "{{BASE_CBBTC}}"
-symbol = "cbBTC"
-pyth_feed_id = "{{BASE_PYTH_CBBTC}}"
-chainlink_feed_path = "cbbtc-usd"
-
-[[aave_v3.offchain_price.assets]]
-asset = "{{BASE_CBETH}}"
-symbol = "cbETH"
-pyth_feed_id = "{{BASE_PYTH_CBETH}}"
-chainlink_feed_path = "chainlink-proxy"
-
-[[aave_v3.offchain_price.assets]]
-asset = "{{BASE_WSTETH}}"
-symbol = "wstETH"
-pyth_feed_id = "{{BASE_PYTH_WSTETH}}"
-chainlink_feed_path = "chainlink-proxy"
-
-[[aave_v3.offchain_price.assets]]
-asset = "{{BASE_WEETH}}"
-symbol = "weETH"
-pyth_feed_id = "{{BASE_PYTH_WEETH}}"
-chainlink_feed_path = "chainlink-proxy"
-
-[[aave_v3.offchain_price.assets]]
-asset = "{{BASE_EZETH}}"
-symbol = "ezETH"
-pyth_feed_id = "{{BASE_PYTH_EZETH}}"
-chainlink_feed_path = "chainlink-proxy"
-
-[[aave_v3.offchain_price.assets]]
-asset = "{{BASE_GHO}}"
-symbol = "GHO"
-pyth_feed_id = "{{BASE_PYTH_GHO}}"
-chainlink_feed_path = "chainlink-proxy"
-
-[[aave_v3.offchain_price.assets]]
-asset = "{{BASE_RSETH}}"
-symbol = "rsETH"
-pyth_feed_id = "{{BASE_PYTH_RSETH}}"
-chainlink_feed_path = "chainlink-proxy"
-
-[[aave_v3.offchain_price.assets]]
-asset = "{{BASE_LBTC}}"
-symbol = "LBTC"
-pyth_feed_id = "{{BASE_PYTH_LBTC}}"
-chainlink_feed_path = "chainlink-proxy"
-
-[[aave_v3.offchain_price.assets]]
-asset = "{{BASE_EURC}}"
-symbol = "EURC"
-pyth_feed_id = "{{BASE_PYTH_EURC}}"
-chainlink_feed_path = "chainlink-proxy"
-
-[[aave_v3.offchain_price.assets]]
-asset = "{{BASE_AAVE}}"
-symbol = "AAVE"
-pyth_feed_id = "{{BASE_PYTH_AAVE}}"
-chainlink_feed_path = "chainlink-proxy"
-
-[[aave_v3.offchain_price.assets]]
-asset = "{{BASE_TBTC}}"
-symbol = "tBTC"
-pyth_feed_id = "{{BASE_PYTH_TBTC}}"
-chainlink_feed_path = "chainlink-proxy"
-
-[[aave_v3.offchain_price.assets]]
-asset = "{{BASE_SYRUPUSDC}}"
-symbol = "syrupUSDC"
-chainlink_feed_path = "chainlink-proxy"
-
-[[aave_v3.chainlink_feeds]]
-asset = "{{BASE_WETH}}"
-proxy = "{{BASE_CHAINLINK_PROXY_WETH}}"
-
-[[aave_v3.chainlink_feeds]]
-asset = "{{BASE_CBETH}}"
-proxy = "{{BASE_CHAINLINK_PROXY_CBETH}}"
-
-[[aave_v3.chainlink_feeds]]
-asset = "{{BASE_WSTETH}}"
-proxy = "{{BASE_CHAINLINK_PROXY_WSTETH}}"
-
-[[aave_v3.chainlink_feeds]]
-asset = "{{BASE_USDC}}"
-proxy = "{{BASE_CHAINLINK_PROXY_USDC}}"
-
-[[aave_v3.chainlink_feeds]]
-asset = "{{BASE_WEETH}}"
-proxy = "{{BASE_CHAINLINK_PROXY_WEETH}}"
-
-[[aave_v3.chainlink_feeds]]
-asset = "{{BASE_EZETH}}"
-proxy = "{{BASE_CHAINLINK_PROXY_EZETH}}"
-
-[[aave_v3.chainlink_feeds]]
-asset = "{{BASE_GHO}}"
-proxy = "{{BASE_CHAINLINK_PROXY_GHO}}"
-
-[[aave_v3.chainlink_feeds]]
-asset = "{{BASE_RSETH}}"
-proxy = "{{BASE_CHAINLINK_PROXY_RSETH}}"
-
-[[aave_v3.chainlink_feeds]]
-asset = "{{BASE_LBTC}}"
-proxy = "{{BASE_CHAINLINK_PROXY_LBTC}}"
-
-[[aave_v3.chainlink_feeds]]
-asset = "{{BASE_EURC}}"
-proxy = "{{BASE_CHAINLINK_PROXY_EURC}}"
-
-[[aave_v3.chainlink_feeds]]
-asset = "{{BASE_AAVE}}"
-proxy = "{{BASE_CHAINLINK_PROXY_AAVE}}"
-
-[[aave_v3.chainlink_feeds]]
-asset = "{{BASE_TBTC}}"
-proxy = "{{BASE_CHAINLINK_PROXY_TBTC}}"
-
-[[aave_v3.chainlink_feeds]]
-asset = "{{BASE_SYRUPUSDC}}"
-proxy = "{{BASE_CHAINLINK_PROXY_SYRUPUSDC}}"
+# EIP-1559 base-fee prediction parameters — Base / Optimism Canyon hardfork values.
+# These must match the on-chain protocol constants for accurate next-block prediction.
+[gas_params]
+eip1559_elasticity_multiplier = 6        # Base/Optimism: gas_target = gas_limit / 6
+eip1559_base_fee_change_denominator = 50 # Base/Optimism: slow adjustment (2% per block max)
+min_base_fee_wei = 1000000               # 0.001 gwei — Base L2 enforced floor
+priority_fee_cap_gwei = 10               # hard cap on priority bid (Base is cheap)

@@ -11,16 +11,27 @@ pub struct Config {
     #[serde(default)]
     pub gas: GasConfig,
     #[serde(default)]
-    pub aave_v3: Option<AaveV3Config>,
-    #[serde(default)]
     pub execution: ExecutionConfig,
+    /// REVM startup filter router mapping (protocol -> router address).
+    /// Set per-chain in TOML `[revm_filter.routers]`.
     #[serde(default)]
-    pub liquidation: Option<LiquidationConfig>,
-    /// Master kill switch for the arbitrage sub-system.
-    /// Set to false to run liquidation-only without any arb scanning.
-    /// Defaults to true so existing configs that omit this field keep working.
-    #[serde(default = "default_true")]
-    pub arbitrage_enabled: bool,
+    pub revm_filter: RevmFilterConfig,
+    /// Chain-specific EIP-1559 base-fee calculation parameters.
+    /// Controls how the gas station predicts next-block base fees.
+    /// Set per-chain in the TOML [gas_params] section.
+    #[serde(default)]
+    pub gas_params: GasParamsConfig,
+    /// AAVE V3 — optional; needed for Tier-3 flash loans and oracle price fetches.
+    #[serde(default)]
+    pub aave_v3: Option<AaveV3Config>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct RevmFilterConfig {
+    /// Lowercase protocol key -> router address.
+    /// Example keys: uniswapv2, pancakeswapv2, aerodrome, uniswapv3, pancakeswapv3.
+    #[serde(default)]
+    pub routers: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -33,6 +44,11 @@ pub struct ChainConfig {
     pub wss_urls: Vec<String>,
     #[serde(default)]
     pub cache_dir: Option<String>,
+    /// Optional L2 sequencer submission endpoint.
+    /// Set for chains with a dedicated sequencer (e.g. Base, OP).
+    /// Absent on BSC, Avalanche, etc. — falls back to https_url.
+    #[serde(default)]
+    pub sequencer_url: Option<String>,
     /// Token addresses to ignore during path generation (scam/honeypot tokens).
     #[serde(default)]
     pub blacklisted_tokens: Vec<String>,
@@ -53,6 +69,18 @@ pub struct TokenConfig {
     /// e.g. WETH: "0x6c561B446416E1A00E8E93E221854d6eA4171372" (WETH/USDC Uni V3)
     ///      cbBTC: "0xfBB6Eed8e7aa03B138556eeDaF5D271A5E1e43ef" (USDC/cbBTC Uni V3)
     pub price_pool: Option<String>,
+}
+
+/// Minimal AAVE V3 config kept in arb-bot for:
+///   - Tier-3 flash loan fallback in the arb executor/bundler
+///   - Optional Chainlink-backed price oracle for start-token USD valuation
+#[derive(Debug, Clone, Deserialize)]
+pub struct AaveV3Config {
+    /// AAVE V3 Pool contract address (used for flashLoanSimple).
+    pub pool: String,
+    /// AAVE V3 Oracle address (Chainlink-backed, optional — price logic skipped if absent).
+    #[serde(default)]
+    pub oracle: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -144,12 +172,6 @@ pub struct UniswapV3CLConfig {
     /// Quoter / QuoterV2 address (optional, used for off-chain price queries).
     #[serde(default)]
     pub quoter: Option<String>,
-    /// Minimum raw Uniswap V3 liquidity (L = sqrt(x*y) in atomic units) for a
-    /// pool to be considered active each block.  This is NOT a USD value.
-    /// 0 = only skip zero-liquidity pools (default).
-    /// 1_000_000_000 (1e9) = filter out dust while keeping any real pool.
-    #[serde(default)]
-    pub min_liquidity: u64,
 }
 
 impl UniswapV3CLConfig {
@@ -198,259 +220,200 @@ pub struct GasConfig {
     pub token_is_token0: Option<bool>,
 }
 
-/// A single Chainlink price feed mapping: the AAVE reserve token address to
-/// the Chainlink proxy contract that prices it on this chain.
-///
-/// Used by `price_trigger.rs` to subscribe to `AnswerUpdated` events and,
-/// on chains with an accessible mempool, to detect `forward(transmit())`
-/// pending transactions before they confirm.
-#[derive(Debug, Clone, Deserialize)]
-pub struct ChainlinkFeed {
-    /// Aave reserve token address (e.g. WETH on Base).
-    pub asset: String,
-    /// Chainlink EACAggregatorProxy contract for this asset on this chain.
-    /// The price trigger resolves the underlying OCR2 aggregator at startup
-    /// by calling `aggregator()` on this proxy.
-    pub proxy: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct OffchainPriceConfig {
-    /// Master switch for off-chain early-warning sources.
-    /// Off-chain signals are advisory and should not bypass on-chain oracle checks.
-    #[serde(default)]
-    pub enabled: bool,
-    /// If true, off-chain updates can be forwarded into the liquidation pipeline
-    /// as early-warning events.
-    #[serde(default)]
-    pub dispatch_price_updates: bool,
-    /// Keep liquidation execution gated by on-chain oracle confirmation.
-    /// Defaults to true for safety.
-    #[serde(default = "default_true")]
-    pub require_onchain_confirmation: bool,
-    #[serde(default = "default_offchain_max_staleness_secs")]
-    pub max_staleness_secs: u64,
-    #[serde(default = "default_offchain_max_confidence_bps")]
-    pub max_confidence_bps: u32,
-    #[serde(default = "default_offchain_min_rescan_interval_ms")]
-    pub min_rescan_interval_ms: u64,
-    #[serde(default)]
-    pub replay_file: Option<String>,
-    #[serde(default)]
-    pub pyth_hermes: Option<PythHermesConfig>,
-    #[serde(default)]
-    pub chainlink_streams: Option<ChainlinkStreamsConfig>,
-    #[serde(default)]
-    pub assets: Vec<OffchainAssetConfig>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct PythHermesConfig {
-    pub endpoint: String,
-    #[serde(default = "default_pyth_poll_interval_ms")]
-    pub poll_interval_ms: u64,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct ChainlinkStreamsConfig {
-    pub endpoint: String,
-    #[serde(default = "default_chainlink_poll_interval_ms")]
-    pub poll_interval_ms: u64,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct OffchainAssetConfig {
-    /// Aave reserve token address.
-    pub asset: String,
-    /// Symbol label for logs/metrics.
-    pub symbol: String,
-    /// Pyth Hermes feed id (hex string, no 0x prefix).
-    #[serde(default)]
-    pub pyth_feed_id: Option<String>,
-    /// Chainlink feed path on data.chain.link (e.g. eth-usd, usdc-usd, cbbtc-usd).
-    #[serde(default)]
-    pub chainlink_feed_path: Option<String>,
-    /// Optional Chainlink stream/feed id when available.
-    #[serde(default)]
-    pub chainlink_feed_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct AaveV3Config {
-    pub pool: String,
-    #[serde(default)]
-    pub pool_addresses_provider: Option<String>,
-    #[serde(default)]
-    pub oracle: Option<String>,
-    #[serde(default)]
-    pub data_provider: Option<String>,
-    /// AAVE UiPoolDataProvider address — required for Phase 2 (health factor cache).
-    /// Base mainnet: verify at https://docs.aave.com/developers/deployed-contracts/v3-mainnet/base
-    #[serde(default)]
-    pub ui_pool_data_provider: Option<String>,
-    #[serde(default)]
-    pub allowed_assets: Vec<String>,
-    /// Enable the Phase-1 liquidation monitor (whistleblower task).
-    /// Set to true in config to start listening for AAVE v3 events.
-    #[serde(default)]
-    pub monitoring_enabled: bool,
-    /// Path to a flat text file (one address per line) of known AAVE v3 borrowers.
-    /// Generated by `scripts/pull_aave_borrowers.py`.
-    /// Phase 2 uses this to pre-seed the health-factor cache at startup so every
-    /// borrower is known immediately rather than being discovered from live events.
-    #[serde(default)]
-    pub borrowers_file: Option<String>,
-    /// Chainlink price feeds to monitor for oracle price updates.
-    /// Each entry maps an Aave reserve token → its Chainlink proxy address.
-    /// The price trigger (Phase 2.5) subscribes to AnswerUpdated events and,
-    /// on chains with an accessible mempool, also watches pending transmit() txs.
-    /// Leave empty to disable the Chainlink price trigger.
-    #[serde(default)]
-    pub chainlink_feeds: Vec<ChainlinkFeed>,
-    /// Enable Path B (full pending-tx mempool subscription) inside price_trigger.
-    /// Defaults to true, but set to false on chains (e.g. Base) where the node
-    /// does not support `eth_subscribe("newPendingTransactions")` so the warning
-    /// is suppressed and the attempt is skipped entirely.
-    #[serde(default = "default_true")]
-    pub chainlink_pending_txs: bool,
-    /// Off-chain early-warning price sources (Pyth Hermes / Chainlink Streams).
-    #[serde(default)]
-    pub offchain_price: OffchainPriceConfig,
-}
-
 #[derive(Debug, Clone, Deserialize)]
 pub struct ExecutionConfig {
-    #[serde(default)]
-    pub enabled: bool,
-    #[serde(default = "default_min_profit_threshold")]
-    pub min_profit_threshold: f64,
-    #[serde(default = "default_max_position_size")]
-    pub max_position_size: f64,
     #[serde(default = "default_true")]
     pub use_flashloan: bool,
     #[serde(default = "default_flashloan_provider")]
     pub default_flashloan_provider: String,
-    #[serde(default = "default_max_priority_fee_gwei")]
-    pub max_priority_fee_gwei: f64,
-    #[serde(default = "default_max_base_fee_gwei")]
-    pub max_base_fee_gwei: f64,
     #[serde(default = "default_true")]
-    pub simulation_required: bool,
-    /// Estimated gas units for a single arb transaction (used for profit netting).
-    #[serde(default = "default_estimated_gas")]
-    pub estimated_gas: u64,
-    #[serde(default)]
-    pub balancer_vault: Option<String>,
+    pub dynamic_flashloan_routing: bool,
+    #[serde(default = "default_flashloan_providers")]
+    pub flashloan_providers: Vec<String>,
+    #[serde(default = "default_flash_loan_fee_uniswap_v3_bps")]
+    pub flash_loan_fee_uniswap_v3_bps: u64,
+    #[serde(default = "default_flash_loan_fee_pancakeswap_v3_bps")]
+    pub flash_loan_fee_pancakeswap_v3_bps: u64,
     /// Private sequencer / builder RPC URL for MEV-protection.
     /// When set, transactions are submitted ONLY here — not to the public mempool.
-    /// Recommended for Base: "https://rpc.titanbuilder.xyz/" (dominant Base builder)
     /// Can also be overridden at runtime via the PRIVATE_RPC_URL env var.
     #[serde(default)]
     pub private_rpc_url: Option<String>,
+    /// Maximum gas limit for arb transactions (prevents gas grief on reverts).
+    #[serde(default = "default_max_gas_limit")]
+    pub max_gas_limit: u64,
+    /// Share of profit to allocate to the priority fee (bps; 5000 = 50%).
+    #[serde(default = "default_profit_share_bps")]
+    pub profit_share_bps: u64,
+    /// Minimum net profit required to submit a transaction (wei).
+    #[serde(default = "default_min_submit_profit_wei")]
+    pub min_submit_profit_wei: u64,
+    /// Minimum net profit for a path to pass the simulator stage (wei).
+    #[serde(default = "default_min_sim_profit_wei")]
+    pub min_sim_profit_wei: u64,
+    /// Number of binary search steps for input amount optimisation.
+    #[serde(default = "default_optimization_steps")]
+    pub optimization_steps: usize,
+    /// Minimum flash-loan input amount (native token units; e.g. 0.01 = 0.01 ETH/BNB/AVAX).
+    #[serde(default = "default_min_input_eth")]
+    pub min_input_eth: f64,
+    /// Maximum flash-loan input amount (native token units).
+    #[serde(default = "default_max_input_eth")]
+    pub max_input_eth: f64,
+    /// Maximum number of hops in an arb path (e.g. 4 = up to 4-leg paths).
+    #[serde(default = "default_max_hops")]
+    pub max_hops: usize,
+    /// Maximum arb paths generated per start token during startup.
+    #[serde(default = "default_max_paths_per_token")]
+    pub max_paths_per_token: usize,
+    /// Maximum paths the searcher evaluates per block.
+    #[serde(default = "default_max_paths_per_block")]
+    pub max_paths_per_block: usize,
+    /// Rough gas estimate used by the searcher for pre-screening paths (gas units).
+    #[serde(default = "default_searcher_gas_estimate")]
+    pub searcher_gas_estimate: u64,
+    /// Number of parallel simulator workers (REVM). More workers = higher throughput
+    /// at the cost of CPU. Recommended: num_cpus or half of it.
+    #[serde(default = "default_num_simulators")]
+    pub num_simulators: usize,
+    /// Channel buffer depth for inter-worker mpsc queues.
+    /// Not chain-specific — tunes server memory vs backpressure. Default suits most hardware.
+    #[serde(default = "default_channel_buffer")]
+    pub channel_buffer: usize,
+    /// Broadcast channel capacity for new-block events.
+    /// Not chain-specific — same rationale as channel_buffer.
+    #[serde(default = "default_broadcast_capacity")]
+    pub broadcast_capacity: usize,
+    /// Aave V3 flash-loan fee in basis points (5 = 0.05%).
+    /// Aave governance can change this — update here if it changes on-chain.
+    #[serde(default = "default_flash_loan_fee_aave_bps")]
+    pub flash_loan_fee_aave_bps: u64,
+    /// Enable the mempool listener (pending tx subscription).
+    /// When true, the pipeline subscribes to pending DEX swaps and triggers
+    /// the searcher for affected pools before the next block is mined.
+    #[serde(default)]
+    pub enable_mempool: bool,
+    /// Max allowed simulator-to-head lag (in blocks) in TxSender stale check.
+    #[serde(default = "default_max_stale_blocks")]
+    pub max_stale_blocks: u64,
+    /// Unified strike threshold for path/token blacklisting.
+    #[serde(default = "default_strike_threshold")]
+    pub strike_threshold: u32,
+    /// Maximum number of paths forwarded to simulators per block.
+    /// Paths are sorted by estimated profit (descending) so only the top candidates
+    /// reach REVM.  Rule-of-thumb: (block_time_ms / revm_ms_per_path) * num_simulators.
+    /// BSC: ~400ms / ~185ms × 8 workers ≈ 17; default 16 keeps sims within one block.
+    #[serde(default = "default_max_sim_paths")]
+    pub max_sim_paths: usize,
+    /// Simulator stale-block tolerance: paths from blocks older than
+    /// (latest_seen - sim_stale_blocks) are discarded without simulation.
+    /// BSC: 1 is correct (400ms blocks). Increase for slower chains.
+    #[serde(default = "default_sim_stale_blocks")]
+    pub sim_stale_blocks: u64,
 }
 
 impl Default for ExecutionConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
-            min_profit_threshold: default_min_profit_threshold(),
-            max_position_size: default_max_position_size(),
             use_flashloan: default_true(),
             default_flashloan_provider: default_flashloan_provider(),
-            max_priority_fee_gwei: default_max_priority_fee_gwei(),
-            max_base_fee_gwei: default_max_base_fee_gwei(),
-            simulation_required: default_true(),
-            estimated_gas: default_estimated_gas(),
-            balancer_vault: None,
+            dynamic_flashloan_routing: default_true(),
+            flashloan_providers: default_flashloan_providers(),
+            flash_loan_fee_uniswap_v3_bps: default_flash_loan_fee_uniswap_v3_bps(),
+            flash_loan_fee_pancakeswap_v3_bps: default_flash_loan_fee_pancakeswap_v3_bps(),
             private_rpc_url: None,
+            max_gas_limit: default_max_gas_limit(),
+            profit_share_bps: default_profit_share_bps(),
+            min_submit_profit_wei: default_min_submit_profit_wei(),
+            min_sim_profit_wei: default_min_sim_profit_wei(),
+            optimization_steps: default_optimization_steps(),
+            min_input_eth: default_min_input_eth(),
+            max_input_eth: default_max_input_eth(),
+            max_hops: default_max_hops(),
+            max_paths_per_token: default_max_paths_per_token(),
+            max_paths_per_block: default_max_paths_per_block(),
+            searcher_gas_estimate: default_searcher_gas_estimate(),
+            num_simulators: default_num_simulators(),
+            channel_buffer: default_channel_buffer(),
+            broadcast_capacity: default_broadcast_capacity(),
+            flash_loan_fee_aave_bps: default_flash_loan_fee_aave_bps(),
+            enable_mempool: false,
+            max_stale_blocks: default_max_stale_blocks(),
+            strike_threshold: default_strike_threshold(),
+            max_sim_paths: default_max_sim_paths(),
+            sim_stale_blocks: default_sim_stale_blocks(),
         }
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct LiquidationConfig {
-    #[serde(default)]
-    pub enabled: bool,
-    #[serde(default = "default_max_position_size")]
-    pub max_position_size: f64,
-    #[serde(default = "default_estimated_gas")]
-    pub estimated_gas: u64,
-    #[serde(default)]
-    pub balancer_vault: Option<String>,
-    #[serde(default = "default_min_liquidation_profit_usd")]
-    pub min_liquidation_profit_usd: f64,
-    #[serde(default)]
-    pub balancer_pool_ids: Vec<String>,
-    /// Morpho Blue contract address (0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb on Base).
-    /// When set, the executor checks Morpho's balance of the debt token first.
-    /// If adequate, Morpho is preferred over Balancer (both charge 0% fee, but Morpho
-    /// can cover assets that Balancer may not hold).
-    #[serde(default)]
-    pub morpho: Option<String>,
-    /// AAVE V3 lending pool address used as a last-resort flash-loan source
-    /// (0.05% fee, charged as `premium` in the executeOperation callback).
-    /// Must match the address set via `bot.setAavePool()` in the deployed contract.
-    #[serde(default)]
-    pub aave_pool: Option<String>,
-    /// Path to the opportunity log CSV file.
-    /// Every detected liquidation event (profitable or not) is appended here.
-    /// Defaults to "cache/<chain>/liquidation_opportunities.csv".
-    #[serde(default)]
-    pub opportunity_log: Option<String>,
-}
-
-impl Default for LiquidationConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            max_position_size: default_max_position_size(),
-            estimated_gas: default_estimated_gas(),
-            balancer_vault: None,
-            min_liquidation_profit_usd: default_min_liquidation_profit_usd(),
-            balancer_pool_ids: Vec::new(),
-            morpho: None,
-            aave_pool: None,
-            opportunity_log: None,
-        }
-    }
-}
-
-impl LiquidationConfig {
-    pub fn from_execution(cfg: &ExecutionConfig) -> Self {
-        Self {
-            enabled: cfg.enabled,
-            max_position_size: cfg.max_position_size,
-            estimated_gas: cfg.estimated_gas,
-            balancer_vault: cfg.balancer_vault.clone(),
-            min_liquidation_profit_usd: default_min_liquidation_profit_usd(),
-            balancer_pool_ids: Vec::new(),
-            morpho: None,
-            aave_pool: None,
-            opportunity_log: None,
-        }
-    }
-}
-
-/// Default minimum profit threshold in USD.
-/// The active config file (e.g. avax.toml) always overrides this.
-/// 0.5 = $0.50 USD minimum net profit after gas and flash-loan fees.
-fn default_min_profit_threshold() -> f64 { 0.5 }
-/// Minimum net profit for a liquidation tx — higher than arb since gas is ~550k.
-/// $5 is a comfortable floor: covers extreme gas spikes and leaves real margin.
-fn default_min_liquidation_profit_usd() -> f64 { 5.0 }
-fn default_max_position_size() -> f64 { 10000.0 }
 fn default_true() -> bool { true }
 fn default_flashloan_provider() -> String { "AaveV3".to_string() }
-fn default_max_priority_fee_gwei() -> f64 { 50.0 }
-fn default_max_base_fee_gwei() -> f64 { 100.0 }
-fn default_estimated_gas() -> u64 { 550_000 }
+fn default_flashloan_providers() -> Vec<String> {
+    vec![
+        "AaveV3".to_string(),
+        "UniswapV3".to_string(),
+        "PancakeSwapV3".to_string(),
+    ]
+}
 fn default_v2_fee_bps() -> u32 { 30 }
 fn default_max_profit_pct() -> f64 { 50.0 }
-fn default_pyth_poll_interval_ms() -> u64 { 300 }
-fn default_chainlink_poll_interval_ms() -> u64 { 300 }
-fn default_offchain_max_staleness_secs() -> u64 { 20 }
-fn default_offchain_max_confidence_bps() -> u32 { 150 }
-fn default_offchain_min_rescan_interval_ms() -> u64 { 300 }
+// ExecutionConfig defaults
+fn default_max_gas_limit() -> u64 { 1_000_000 }
+fn default_profit_share_bps() -> u64 { 5000 }
+fn default_min_submit_profit_wei() -> u64 { 50_000_000_000_000 }   // 0.00005 ETH
+fn default_min_sim_profit_wei() -> u64 { 100_000_000_000_000 }    // 0.0001 ETH
+fn default_optimization_steps() -> usize { 20 }
+fn default_min_input_eth() -> f64 { 0.01 }
+fn default_max_input_eth() -> f64 { 50.0 }
+fn default_max_hops() -> usize { 4 }
+fn default_max_paths_per_token() -> usize { 200_000 }
+fn default_max_paths_per_block() -> usize { 50_000 }
+fn default_searcher_gas_estimate() -> u64 { 250_000 }
+fn default_num_simulators() -> usize { 4 }
+fn default_channel_buffer() -> usize { 256 }
+fn default_broadcast_capacity() -> usize { 128 }
+fn default_flash_loan_fee_aave_bps() -> u64 { 5 }
+fn default_flash_loan_fee_uniswap_v3_bps() -> u64 { 0 }
+fn default_flash_loan_fee_pancakeswap_v3_bps() -> u64 { 0 }
+fn default_max_stale_blocks() -> u64 { 3 }
+fn default_strike_threshold() -> u32 { 3 }
+fn default_max_sim_paths() -> usize { 16 }
+fn default_sim_stale_blocks() -> u64 { 1 }
+
+/// Chain-specific EIP-1559 base-fee prediction parameters.
+/// These values vary by chain and must match on-chain protocol constants.
+///
+/// Base / Optimism (Canyon hardfork): elasticity=6, denominator=50, min_base_fee=0.001 gwei
+/// BSC / Avalanche (standard EIP-1559): elasticity=2, denominator=8, min_base_fee=1 gwei
+#[derive(Debug, Clone, Deserialize)]
+pub struct GasParamsConfig {
+    /// EIP-1559 elasticity multiplier (gas_target = gas_limit / elasticity).
+    #[serde(default = "default_eip1559_elasticity")]
+    pub eip1559_elasticity_multiplier: u64,
+    /// EIP-1559 base fee change denominator (controls how fast base fee adjusts).
+    #[serde(default = "default_eip1559_denominator")]
+    pub eip1559_base_fee_change_denominator: u64,
+    /// Minimum base fee floor in wei (chain-enforced lower bound).
+    #[serde(default = "default_min_base_fee_wei")]
+    pub min_base_fee_wei: u64,
+    /// Hard cap on priority fee in gwei (prevents runaway priority bids).
+    #[serde(default = "default_priority_fee_cap_gwei")]
+    pub priority_fee_cap_gwei: u64,
+}
+impl Default for GasParamsConfig {
+    fn default() -> Self {
+        Self {
+            eip1559_elasticity_multiplier: default_eip1559_elasticity(),
+            eip1559_base_fee_change_denominator: default_eip1559_denominator(),
+            min_base_fee_wei: default_min_base_fee_wei(),
+            priority_fee_cap_gwei: default_priority_fee_cap_gwei(),
+        }
+    }
+}
+fn default_eip1559_elasticity() -> u64 { 6 }     // Base/Optimism Canyon default
+fn default_eip1559_denominator() -> u64 { 50 }   // Base/Optimism Canyon default
+fn default_min_base_fee_wei() -> u64 { 1_000_000 } // 0.001 gwei (Base L2 floor)
+fn default_priority_fee_cap_gwei() -> u64 { 10 }  // 10 gwei hard cap
 
 impl Config {
     pub fn load() -> Result<Self> {

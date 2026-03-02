@@ -48,13 +48,6 @@ from_blocks = [64928028]
 direct_pair = true  # Use pair contract directly (no router CREATE2 lookup)
 # Pharaoh volatile pools populated via: python scripts/pull_pharaoh_pools.py --config-path config/avax.toml
 
-[dexes.v3]
-enabled = false
-factories = []
-routers = []
-quoter = ""
-fee_tiers = [100, 500, 3000, 10000]
-
 [dexes.algebra]
 enabled = true
 factories = ["0x512eb749541B7cf294be882D636218c84a5e9E5F"]
@@ -66,6 +59,10 @@ enabled = true
 factory = "0xAE6E5c62328ade73ceefD42228528b70c8157D0d"
 router  = "0xc8B8fCbDb5C019D7802fFb0b39603395D7d3915c"
 quoter  = "0xAdAe75447D112cfC401C952744de3E6d32456465"
+
+[revm_filter.routers]
+uniswapv2 = "0x04E1dee021Cd12bBa022A72806441B43d8212Fec"
+uniswapv3 = "0xc8B8fCbDb5C019D7802fFb0b39603395D7d3915c"
 
 [gas]
 enabled = true
@@ -91,16 +88,27 @@ allowed_assets = [
 ]
 
 [execution]
-enabled = true
-min_profit_threshold = 0.01  # Minimum net profit in USD — very low for fork testing
-max_position_size = 100000000.0
 use_flashloan = true
 default_flashloan_provider = "AaveV3"
-max_priority_fee_gwei = 2
-max_base_fee_gwei = 100
-simulation_required = true
-estimated_gas = 550000  # Estimated gas units per arb transaction
-balancer_vault = "0xBA12222222228d8Ba445958a75a0704d566BF2C8"  # Balancer V2 Vault (AVAX)
+max_gas_limit = 1000000
+profit_share_bps = 5000
+min_submit_profit_wei = 1000000000000    # 0.000001 AVAX — very low for fork testing
+min_sim_profit_wei = 1000000000000
+optimization_steps = 20
+min_input_eth = 0.01
+max_input_eth = 50.0
+max_hops = 4
+max_paths_per_token = 200000
+max_paths_per_block = 50000
+searcher_gas_estimate = 250000
+flash_loan_fee_aave_bps = 5
+
+# EIP-1559 base-fee prediction parameters — mirrors avax.toml (fork uses same chain params).
+[gas_params]
+eip1559_elasticity_multiplier = 2
+eip1559_base_fee_change_denominator = 8
+min_base_fee_wei = 25000000000          # 25 gwei — Avalanche C-Chain enforced floor
+priority_fee_cap_gwei = 10
 
 [liquidation]
 enabled = true

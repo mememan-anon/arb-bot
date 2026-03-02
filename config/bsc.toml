@@ -1,0 +1,163 @@
+address_file = "addresses/bsc.toml"
+
+[chain]
+name = "bsc"
+chain_id = 56
+https_url = ""
+wss_url = ""
+wss_urls = []
+cache_dir = "cache/bsc"
+
+[[start_tokens]]
+symbol = "WBNB"
+address = "{{BSC_WBNB}}"
+decimals = 18
+# WBNB/USDT PancakeSwap V2 pair — used for gas cost denominated in WBNB
+price_pool = "0x16b9a82891338f9bA80E2D6970FddA79D1eb0daE"
+
+[[start_tokens]]
+symbol = "USDT"
+address = "{{BSC_USDT}}"
+decimals = 18
+# WBNB/USDT PancakeSwap V2 pair — same pool used by gas oracle, direction auto-detected
+price_pool = "0x16b9a82891338f9bA80E2D6970FddA79D1eb0daE"
+
+[[start_tokens]]
+symbol = "USDC"
+address = "{{BSC_USDC}}"
+decimals = 18
+# USDC/WBNB PancakeSwap V3 0.01% — $2.3M liquidity
+price_pool = "0xf2688fb5b81049dfb7703ada5e770543770612c4"
+
+[[start_tokens]]
+symbol = "BTCB"
+address = "{{BSC_BTCB}}"
+decimals = 18
+# BTCB/WBNB PancakeSwap V3 0.05% — $10.7M liquidity (V3 pool, auto-detected)
+price_pool = "0x6bbc40579ad1BBD243895cA0ACB086BB6300d636"
+
+[[start_tokens]]
+symbol = "ETH"
+address = "{{BSC_ETH}}"
+decimals = 18
+# ETH/WBNB PancakeSwap V3 0.05% — $6.8M liquidity (V3 pool, auto-detected)
+price_pool = "0xD0e226f674bBf064f54aB47F42473fF80DB98CBA"
+
+[dexes.v2]
+enabled = true
+factories = [
+  # Uniswap V2 on BSC
+  "0x8909Dc15e40173Ff4699343b6eB8132c65e18eC6",
+  # PancakeSwap V2
+  "0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73",
+  # Thena V3,3 vAMM (Solidly / Velodrome V2 fork)
+  "0xAFD89d21BdB66d00817d4153E055830B1c2B3970",
+]
+routers = [
+  # Uniswap V2 Router (BSC)
+  "0x4752ba5DBc23f44D87826276Bf6Fd6b1C372aD24",
+  # PancakeSwap V2 Router
+  "0x10ED43C718714eb63d5aA57B78B54704E256024E",
+  # Thena V3,3 Router (Solidly V2 ABI — 3-field Route)
+  "0xd4ae6eca985340dd434d38f470accce4dc78d109",
+]
+from_blocks = [0, 0, 0]
+direct_pair = true
+
+# Thena Fusion — Algebra V1.9 concentrated liquidity
+[dexes.algebra]
+enabled = true
+factories = [
+  "0x306F06C147f064A010530292A1EB6737c3e378e4",
+]
+routers = [
+  "0x327Dd3208f0bCF590A66110aCB6e5e6941A4EfA0",
+]
+quoter = "0xeA68020D6A9532EeC42D4dB0f92B83580c39b2cA"
+
+[dexes.uniswapv3cl]
+enabled = true
+# Uniswap V3 (BSC)
+factories = [
+  "0xdB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7",
+  # PancakeSwap V3 (BSC)
+  "0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865",
+]
+routers = [
+  "0xB971eF87ede563556b2ED4b1C0b0019111Dd85d2",
+]
+quoter = "0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997"
+
+[revm_filter.routers]
+uniswapv2 = "0x4752ba5DBc23f44D87826276Bf6Fd6b1C372aD24"
+pancakeswapv2 = "0x10ED43C718714eb63d5aA57B78B54704E256024E"
+solidly = "0xd4ae6eca985340dd434d38f470accce4dc78d109"
+uniswapv3 = "0xB971eF87ede563556b2ED4b1C0b0019111Dd85d2"
+pancakeswapv3 = "0x1b81D678ffb9C0263b24A97847620C99d213eB14"
+
+# Gas price token pair — WBNB/USDT on PancakeSwap V2
+[gas]
+enabled = true
+token_symbol = "WBNB"
+token_address = "{{BSC_WBNB}}"
+token_decimals = 18
+stable_symbol = "USDT"
+stable_address = "{{BSC_USDT}}"
+stable_decimals = 18
+pool_address = "0x16b9a82891338f9bA80E2D6970FddA79D1eb0daE"
+token_is_token0 = true
+
+[aave_v3]
+pool   = "0x6807dc923806fE8Fd134338EABCA509979a7e0cB"
+oracle = "0x39bc1bfDa2130d6Bb6DBEfd366939b4c7aa7C697"
+allowed_assets = [
+  "{{BSC_WBNB}}", # BNB
+  "{{BSC_USDT}}", # USDT
+  "{{BSC_BTCB}}",  # BTC
+  "{{BSC_USDC}}", # usdc
+  "{{BSC_ETH}}",  # ETH
+]
+
+[execution]
+use_flashloan = true
+default_flashloan_provider = "UniswapV3"
+dynamic_flashloan_routing = false
+flashloan_providers = ["UniswapV3", "PancakeSwapV3", "AaveV3"]
+profit_share_bps = 5000          # 50% of profit → priority fee
+flash_loan_fee_aave_bps = 5      # Aave V3 flash-loan fee (5 = 0.05%)
+flash_loan_fee_uniswap_v3_bps = 0
+flash_loan_fee_pancakeswap_v3_bps = 0
+max_hops = 4                     # max arb path length
+
+max_gas_limit = 450000           # The maximum gas units your arb transaction is allowed to use.
+min_submit_profit_wei = 500000000000000   # ~$0.30 at $600/BNB — net profit threshold to submit
+min_sim_profit_wei = 1000000000000000   # ~$0.60 at $600/BNB — pre-screen threshold before full REVM simulation
+optimization_steps = 12          # binary search iterations
+min_input_eth = 0.01             # min flash-loan input (BNB units). Below 0.01 BNB the profit is too small to cover gas.
+max_input_eth = 50.0             # max flash-loan input (BNB units). Above 50 BNB you'd drain pool liquidity and the arb collapses anyway.
+max_paths_per_token = 200000     # paths generated per start token at startup
+max_paths_per_block = 150000      # searcher eval is <10ms for 80 paths (parallel rayon), ~120ms for 1000. Paths are shuffled so each block samples different paths.
+searcher_gas_estimate = 250000   # rough gas estimate for searcher pre-screening
+num_simulators = 8               # parallel REVM simulator workers (fan-out from shared channel)
+max_sim_paths = 16               # top-N paths (by estimated profit) sent to REVM per block.
+                                 # Rule-of-thumb: (block_time_ms / revm_ms_per_path) * num_simulators
+                                 # BSC: ~400ms / ~185ms × 8 workers ≈ 17 → 16 keeps sims within one BSC block.
+sim_stale_blocks = 1             # simulator discards paths from blocks (chain_head - sim_stale_blocks) or older.
+                                 # BSC: 1 is correct (400ms blocks). Increase for slower chains.
+channel_buffer = 4096            # inter-worker mpsc buffer (larger for 150K paths/block)
+enable_mempool = true            # subscribe to pending DEX swaps from BSC mempool
+max_stale_blocks = 3             # tx-sender stale arb cutoff (blocks behind chain head)
+strike_threshold = 3             # path/token blacklist strikes before blacklisting
+
+#SKIP_POOL_FILTER=1
+
+# BSC EIP-1559 parameters — confirmed from bnb-chain/bsc params/config.go source.
+# baseFeePerGas is always 0x0 on BSC (chain utilization ~19%, well below 50% target),
+# so base fee stays at the min_base_fee_wei floor. Values 2 and 8 are the correct
+# BSC protocol constants (DefaultElasticityMultiplier / DefaultBaseFeeChangeDenominator).
+# The Rust default is Base/OP values (6/50) — must override here or gas_station.rs is wrong.
+[gas_params]
+eip1559_elasticity_multiplier = 2       # BSC: gas_target = gas_limit / 2 (55M / 2 = 27.5M target)
+eip1559_base_fee_change_denominator = 8 # BSC: standard go-ethereum default (same as mainnet)
+min_base_fee_wei = 50000000             # 0.05 gwei — verified live via eth_gasPrice (0x2faf080)
+priority_fee_cap_gwei = 3               # max tip bid cap (~3.05 gwei total max)

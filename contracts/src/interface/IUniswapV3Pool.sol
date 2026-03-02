@@ -38,6 +38,14 @@ interface IUniswapV3Pool {
         uint160 sqrtPriceLimitX96,
         bytes   calldata data
     ) external returns (int256 amount0, int256 amount1);
+
+    /// @notice Borrow token0/token1 and repay with fee in the flash callback.
+    function flash(
+        address recipient,
+        uint256 amount0,
+        uint256 amount1,
+        bytes calldata data
+    ) external;
 }
 
 /// @notice Callback that Uniswap V3 pools call to collect the input tokens.
@@ -47,5 +55,14 @@ interface IUniswapV3SwapCallback {
         int256 amount0Delta,
         int256 amount1Delta,
         bytes  calldata data
+    ) external;
+}
+
+/// @notice Callback that Uniswap V3 pools call for flash loans.
+interface IUniswapV3FlashCallback {
+    function uniswapV3FlashCallback(
+        uint256 fee0,
+        uint256 fee1,
+        bytes calldata data
     ) external;
 }

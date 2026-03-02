@@ -13,36 +13,49 @@ tokio-stream = { version = "0.1", features = ['sync'] }
 log = "0.4.17"
 url = "2.3.1"
 hex = "0.4.3"
-serde = { version = "1.0.145", features = ["derive"] }
+serde = { version = "1.0.210", features = ["derive"] }
 serde_json = "1.0"
 toml = "0.8.12"
 anyhow = "1.0.71"
-reqwest = "0.11.12"
+reqwest = { version = "0.11.12", features = ["json", "blocking"] }
 thiserror = "1.0.37"
 futures = "0.3.5"
 itertools = "0.11.0"
 rayon = "1.10"
+dashmap = "6"
+petgraph = "0.6"
 
 # EVM based crates
-# alloy — used exclusively by the liquidation module (monitor / health-factor / executor).
-# ethers-rs is kept for the arb core; the two stacks talk via tokio channels.
-alloy = { version = "1", features = ["full"] }
-alloy-primitives = "1"
-futures-util = "0.3"
-cfmms = "0.6.2"
-ethers-flashbots = { git = "https://github.com/onbjerg/ethers-flashbots", version = "0.14.0" }
-ethers-providers = "2.0"
-ethers-core = "2.0"
-ethers-contract = { version = "2.0", default-features = false }
-ethers = {version = "2.0", features = ["abigen", "ws", "rustls"]}
+# ── Alloy / REVM stack ───────────────────────────────────────────────────────
+alloy = { version = "0.6.4", features = ["full", "rpc-types-debug", "rpc-types-trace", "provider-debug-api"] }
+revm = { version = "14", default-features = false, features = ["std", "serde"] }
+uniswap_v3_math = "=0.5.2"
 
-# logging
-indoc = "2"
-fern = {version = "0.6.2", features = ["colored"]}
+# pool cache parsing
+csv = "1.2.2"
+
+# Performance
+rustc-hash = "2.0"        # FxHasher — faster hashing in cache_v2
+# Pin aes to 0.8.4: satisfies both reth-ecies (^0.8.1) and discv5 (^0.8.4)
+aes = "0.8.4"
+
+# Logging
+fern = { version = "0.6.2", features = ["colored"] }
 chrono = "0.4.23"
 colored = "2.0.0"
-csv = "1.2.2"
-indicatif = "0.17.5"
+
+# ── Local reth Base node ──────────────────────────────────────────────────────
+# Requires removing the ethers-rs stack first (done). Now enabled.
+# Build with: cargo build --features local-node
+eyre = { version = "0.6", optional = true }
+reth = { git = "https://github.com/paradigmxyz/reth", tag = "v1.0.8", optional = true }
+reth-db = { git = "https://github.com/paradigmxyz/reth", tag = "v1.0.8", package = "reth-db", optional = true }
+reth-chainspec = { git = "https://github.com/paradigmxyz/reth", tag = "v1.0.8", package = "reth-chainspec", optional = true }
+reth-optimism-node = { git = "https://github.com/paradigmxyz/reth", tag = "v1.0.8", package = "reth-optimism-node", optional = true }
+reth-optimism-chainspec = { git = "https://github.com/paradigmxyz/reth", tag = "v1.0.8", package = "reth-optimism-chainspec", optional = true }
+
+[features]
+local-node = ["reth", "reth-db", "reth-chainspec", "reth-optimism-node", "reth-optimism-chainspec", "eyre"]
 
 [dev-dependencies]
 criterion = { version = "0.4", features = ["html_reports"] }

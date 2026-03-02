@@ -1,44 +1,67 @@
-use rust::concentrated_liquidity::calculate_sqrt_price_from_tick;
-use ethers::types::U256;
-use rust::concentrated_liquidity::calculate_amount_out;
-use std::collections::HashMap;
+/// Integration tests for the alloy-native AMM math modules.
+///
+/// Replaces the old ethers-based concentrated_liquidity tests.
+/// Uses calculation::v2 (pure constant-product math, no state required).
+
+use alloy::primitives::U256;
+use rust::calculation::v2::{get_amount_out_v2, get_amount_in_v2};
+
+// ── V2 AMM math ─────────────────────────────────────────────────────────────
 
 #[test]
-fn test_tick_math_at_zero() {
-    let tick = 0;
-    let price = calculate_sqrt_price_from_tick(tick);
-    // At tick 0, price is 1.0 (Q96 = 2^96)
-    let expected = U256::one() << 96;
-    assert_eq!(price, expected, "Price at tick 0 should be 2^96");
+fn test_v2_amount_out_non_zero() {
+    let amount_in  = U256::from(1_000_000u64);
+    let reserve_in  = U256::from(1_000_000_000_000u64);
+    let reserve_out = U256::from(1_000_000_000_000u64);
+    let fee_factor = 9970u64; // UniswapV2 0.3%
+
+    let out = get_amount_out_v2(amount_in, reserve_in, reserve_out, fee_factor);
+    assert!(out > U256::ZERO, "amount out should be non-zero");
+    assert!(out < amount_in, "fee should reduce output below input for 1:1 pools");
 }
 
 #[test]
-fn test_tick_math_at_one() {
-    let tick = 1;
-    let price = calculate_sqrt_price_from_tick(tick);
-    // 1.0001^1 * 2^96
-    // 1.0001 approx in Q96: 79228162514264337593543950336 * 1.0001
-    // = 79236085330515764027303304731
-    // Let's assert it is greater than at tick 0
-    let expected_min = U256::one() << 96;
-    assert!(price > expected_min, "Price at tick 1 should be > 2^96");
-    
-    // Check rough value
+fn test_v2_amount_out_zero_on_zero_input() {
+    let out = get_amount_out_v2(
+        U256::ZERO,
+        U256::from(1_000_000u64),
+        U256::from(1_000_000u64),
+        9970,
+    );
+    assert_eq!(out, U256::ZERO);
 }
 
 #[test]
-fn test_cl_amount_out_non_zero() {
-    let amount_in = U256::from(1_000_000u64);
-    let sqrt_price_x96 = U256::one() << 96;
-    let liquidity = U256::from(1_000_000_000_000u64);
-    let fee_pips = 3000u32;
+fn test_v2_amount_in_round_trip() {
+    let reserve_in  = U256::from(5_000_000_000_000u64);
+    let reserve_out = U256::from(2_500_000_000_000u64);
+    let fee_factor  = 9970u64;
+    let amount_in   = U256::from(100_000_000u64);
 
-    let empty_td = HashMap::new();
-    let out_0_to_1 = calculate_amount_out(amount_in, sqrt_price_x96, liquidity, fee_pips, true, 0, 0, &empty_td)
-        .expect("amount out should compute");
-    let out_1_to_0 = calculate_amount_out(amount_in, sqrt_price_x96, liquidity, fee_pips, false, 0, 0, &empty_td)
-        .expect("amount out should compute");
+    let out  = get_amount_out_v2(amount_in, reserve_in, reserve_out, fee_factor);
+    let back = get_amount_in_v2(out, reserve_in, reserve_out, fee_factor);
+    // back should be >= amount_in (fees + rounding)
+    assert!(back >= amount_in, "round-trip should require at least as much input");
+}
 
-    assert!(out_0_to_1 > U256::zero());
-    assert!(out_1_to_0 > U256::zero());
+#[test]
+fn test_v2_profitable_cycle_detection() {
+    // Two imbalanced pools forming a triangle with pool3.
+    // Pool1: 1 WETH = 2500 USDC (cheap ETH)
+    // Pool2: 1 WETH = 2600 USDC (expensive ETH)
+    // Direct arb: buy ETH via pool1, sell ETH via pool2 = profit.
+    let fee_factor = 9970u64;
+    let re_in  = U256::from(1_000_000_000_000_000_000u64); // 1e18 WETH reserve
+    let ru_in  = U256::from(2_500_000_000_000u64);          // 2500 USDC reserve (pool1)
+    let re_out = U256::from(1_000_000_000_000_000_000u64);
+    let ru_out = U256::from(2_600_000_000_000u64);          // 2600 USDC reserve (pool2)
+
+    let amount_usdc_in = U256::from(1_000_000u64); // 1 USDC
+
+    // Step 1: USDC → WETH in pool1
+    let eth_out = get_amount_out_v2(amount_usdc_in, ru_in, re_in, fee_factor);
+    // Step 2: WETH → USDC in pool2
+    let usdc_out = get_amount_out_v2(eth_out, re_out, ru_out, fee_factor);
+
+    assert!(usdc_out > amount_usdc_in, "should profit from the price discrepancy");
 }

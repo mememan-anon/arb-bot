@@ -1,0 +1,1 @@
+{ providers = { AaveV3 = 5, PancakeSwapV3 = 0, UniswapV3 = 0 }, selected_fee_bps = 5, selected_provider = "AaveV3", updated_utc = "2026-03-02T00:47:35.246448500+00:00" }

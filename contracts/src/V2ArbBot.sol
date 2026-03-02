@@ -18,7 +18,7 @@ interface IERC20Extended is IERC20 {
     function decimals() external view returns (uint8);
 }
 
-contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleReceiver, IUniswapV3SwapCallback, IMorphoFlashLoanCallback {
+contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleReceiver, IUniswapV3SwapCallback, IUniswapV3FlashCallback, IMorphoFlashLoanCallback {
     // can perform flashloan, multihop swaps in Uniswap V2 variant pools
     using SafeERC20 for IERC20;
 
@@ -28,6 +28,10 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
 
     /// @dev Trusted Aave V3 pool address — set by owner, checked in executeOperation.
     address public aavePool;
+    /// @dev Trusted UniswapV3 pool used as flash lender for arb start token.
+    address public uniV3FlashPool;
+    /// @dev Trusted PancakeSwapV3 pool used as flash lender for arb start token.
+    address public pancakeV3FlashPool;
 
     /// @dev Transient auth slots for CL swap callbacks — set to the pool being swapped
     ///      before pool.swap() and cleared immediately after.  Prevents any EOA from
@@ -50,7 +54,33 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
     /// @dev Swap vault passed to _executeLiquidationCore during AAVE flash loan callback.
     address private _pendingAaveLiqSwapVault;
 
-    // ── Liquidation parameters ───────────────────────────────────────────────
+    /// @dev Morpho Blue position liquidation transient auth.
+    ///      Set before the Balancer flash loan, cleared inside receiveFlashLoan.
+    bool    private _morphoBlueLiqPending;
+    /// @dev Morpho Blue singleton address stored during the Morpho Blue liq flow.
+    address private _morphoBlueAddr;
+
+    // ── Arb execution parameters — must match the Rust bot's FlashSwap::SwapParams ──
+    //
+    //   poolVersions encoding:
+    //     0 = UniswapV2 / PancakeSwapV2 / Solidly-volatile (constant-product)
+    //     1 = UniswapV3 / PancakeSwapV3 (concentrated liquidity, V3 callback)
+    //     2 = Algebra V1.9 CL pools (Thena Fusion — algebraSwapCallback)
+    //     3 = Solidly stable AMM     (x³y+xy³=k, same swap() ABI as V2)
+    //
+    //   fees[i] = swap fee in basis points for hop i.
+    //     V2/Solidly-stable only; V3 and Algebra pools ignore this field.
+    //     e.g. 25 = PancakeSwap V2 0.25%  |  30 = UniSwap V2 0.30%
+    struct SwapParams {
+        address[] pools;        // pool address per hop
+        uint8[]   poolVersions; // protocol type (see encoding above)
+        uint32[]  fees;         // fee in basis-points per hop
+        uint256   amountIn;     // start amount in start-token units
+        address   startToken;   // explicit start token (avoids ambiguity in 2-hop cycles)
+        uint8     flashLoanProvider; // 0=AaveV3, 1=UniswapV3, 2=PancakeSwapV3, 255=direct
+    }
+
+    // ── AAVE V3 liquidation parameters ───────────────────────────────────────
     struct LiquidationParams {
         address user;
         address collateralAsset;
@@ -93,6 +123,16 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
         aavePool = _aavePool;
     }
 
+    function setUniV3FlashPool(address _pool) external {
+        require(msg.sender == owner, "not owner");
+        uniV3FlashPool = _pool;
+    }
+
+    function setPancakeV3FlashPool(address _pool) external {
+        require(msg.sender == owner, "not owner");
+        pancakeV3FlashPool = _pool;
+    }
+
     function recoverToken(address token) public payable {
         require(msg.sender == owner, "not owner");
         IERC20(token).safeTransfer(
@@ -126,6 +166,145 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
                 i++;
             }
         }
+    }
+
+    // ── External arb entry point ──────────────────────────────────────────────
+
+    /// @notice Primary arbitrage entry point called by the Rust bot.
+    /// @dev    Encodes the SwapParams and initiates an Aave V3 flash loan for the
+    ///         start token.  Inside executeOperation() the swap path is executed
+    ///         and the loan repaid.  Any surplus stays in the contract.
+    ///
+    ///         If Aave is not configured (aavePool == address(0)) or the start
+    ///         token is not in allowedFlashAssets, falls back to direct execution
+    ///         (the contract must already hold sufficient start-token balance).
+    function executeArbitrage(SwapParams calldata arb) external {
+        require(msg.sender == owner, "not owner");
+        require(arb.pools.length > 0, "empty path");
+        require(arb.pools.length == arb.poolVersions.length, "len mismatch");
+
+        address startToken = arb.startToken != address(0)
+            ? arb.startToken
+            : _resolveStartToken(arb.pools[0]);
+
+        if (arb.flashLoanProvider == 0) {
+            require(aavePool != address(0), "aave not configured");
+            require(allowedFlashAssets[startToken], "asset not allowed");
+            IAaveV3Pool(aavePool).flashLoanSimple(
+                address(this),
+                startToken,
+                arb.amountIn,
+                abi.encode(arb),
+                0
+            );
+            return;
+        }
+
+        if (arb.flashLoanProvider == 1) {
+            require(uniV3FlashPool != address(0), "uni v3 flash pool not configured");
+            _executeArbWithFlashPool(uniV3FlashPool, startToken, arb);
+            return;
+        }
+
+        if (arb.flashLoanProvider == 2) {
+            require(pancakeV3FlashPool != address(0), "pancake v3 flash pool not configured");
+            _executeArbWithFlashPool(pancakeV3FlashPool, startToken, arb);
+            return;
+        }
+
+        // Direct path fallback (flashLoanProvider=255 or unknown)
+        uint256 bal = IERC20(startToken).balanceOf(address(this));
+        require(bal >= arb.amountIn, "insufficient balance for direct arb");
+        uint256 amountOut = _executeSwapPath(arb, startToken, arb.amountIn);
+        require(amountOut > arb.amountIn, "direct arb: no profit");
+    }
+
+    function _executeArbWithFlashPool(
+        address flashPool,
+        address startToken,
+        SwapParams calldata arb
+    ) internal {
+        address token0 = IUniswapV3Pool(flashPool).token0();
+        address token1 = IUniswapV3Pool(flashPool).token1();
+
+        uint256 amount0 = startToken == token0 ? arb.amountIn : 0;
+        uint256 amount1 = startToken == token1 ? arb.amountIn : 0;
+        require(amount0 > 0 || amount1 > 0, "start token not in flash pool");
+
+        IUniswapV3Pool(flashPool).flash(
+            address(this),
+            amount0,
+            amount1,
+            abi.encode(arb, flashPool, startToken)
+        );
+    }
+
+    /// @dev Determine the start token for an arb.  The start token is whichever
+    ///      of pool0's tokens matches mainCurrency (WBNB / WETH on the target chain).
+    ///      If neither matches — unusual but possible for non-native start tokens —
+    ///      token0 is used as a default.
+    function _resolveStartToken(address pool) internal view returns (address) {
+        address t0   = IUniswapV2Pair(pool).token0();
+        address t1   = IUniswapV2Pair(pool).token1();
+        address main = address(mainCurrency);
+        if (t0 == main || t1 == main) return main;
+        return t0; // non-native arb: assume token0 is the start token
+    }
+
+    /// @dev Execute a full multi-hop swap path.
+    ///      At entry this contract holds `startAmt` of `startToken`.
+    ///      Returns the total amount of startToken (or the last hop's output token)
+    ///      held by this contract after all hops complete.
+    ///
+    ///      Pool-version dispatch:
+    ///        0 → _swapV2Pair         (UniV2 / PCS V2 / Solidly volatile)
+    ///        1 → _swapUniswapV3Pool  (UniV3 / PCS V3 — uniswapV3SwapCallback)
+    ///        2 → _swapAlgebraPool    (Thena Fusion / AlgebraV1.9 — algebraSwapCallback)
+    ///        3 → _swapSolidlyStablePair (x³y+xy³=k, reads token decimals at runtime)
+    function _executeSwapPath(
+        SwapParams memory arb,
+        address startToken,
+        uint256 startAmt
+    ) internal returns (uint256) {
+        address currentToken = startToken;
+        uint256 currentAmt   = startAmt;
+        uint256 nhop         = arb.pools.length;
+
+        for (uint256 i = 0; i < nhop; ) {
+            address pool    = arb.pools[i];
+            uint8   version = arb.poolVersions[i];
+            // fee in basis-points for this hop (default 25 = PancakeSwap V2 0.25%).
+            // V3 and Algebra pools ignore this value.
+            uint32  feeBps  = (i < arb.fees.length) ? arb.fees[i] : 25;
+
+            // Determine output token by consulting the pool's token pair.
+            // token0() / token1() is supported by V2, V3, and Algebra pools.
+            address t0        = IUniswapV2Pair(pool).token0();
+            address nextToken = (currentToken == t0)
+                ? IUniswapV2Pair(pool).token1()
+                : t0;
+
+            if (version == 0) {
+                // UniswapV2-style constant-product pair.
+                currentAmt = _swapV2Pair(pool, currentToken, nextToken, currentAmt, feeBps);
+            } else if (version == 1) {
+                // UniswapV3 / PancakeSwap V3 concentrated-liquidity pool.
+                currentAmt = _swapUniswapV3Pool(pool, currentToken, nextToken, currentAmt);
+            } else if (version == 2) {
+                // Algebra V1.9 concentrated-liquidity pool (Thena Fusion).
+                currentAmt = _swapAlgebraPool(pool, currentToken, nextToken, currentAmt);
+            } else if (version == 3) {
+                // Solidly stable AMM (x³y+xy³=k).  Reads token decimals at runtime.
+                currentAmt = _swapSolidlyStablePair(pool, currentToken, nextToken, currentAmt, feeBps);
+            } else {
+                revert("unknown pool version");
+            }
+
+            currentToken = nextToken;
+            unchecked { i++; }
+        }
+
+        return currentAmt;
     }
 
     function _swapV2Pair(
@@ -501,13 +680,41 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
         }
     }
 
+    // ── Morpho Blue position liquidation parameters ──────────────────────────
+
+    /// @dev Flash-loan-backed Morpho Blue liquidation parameters.
+    ///      Passed encoded in the Balancer flashLoan data field.
+    struct MorphoBlueLiqParams {
+        address loanToken;
+        address collateralToken;
+        /// @dev Market oracle — used by Morpho to price collateral; not called by this contract.
+        address oracle;
+        /// @dev Interest rate model address (part of MarketParams identity).
+        address irm;
+        /// @dev Loan-to-value ratio for this market (WAD scale: 1e18 = 100%).
+        uint256 lltv;
+        address borrower;
+        /// @dev Borrow shares to repay; Morpho computes the collateral seized (incl. incentive).
+        uint256 repaidShares;
+        /// @dev Pre-computed flash loan amount in loan-token units (repaidAssets estimate).
+        uint256 flashAmount;
+        /// @dev Uniswap V3 pool for collateral→WETH leg (address(0) if collateral==WETH).
+        address collateralPool;
+        /// @dev Uniswap V3 pool for WETH→loanToken leg (address(0) if loanToken==WETH).
+        address debtPool;
+        /// @dev Balancer V2 poolId for collateral→WETH (bytes32(0) → use V3 collateralPool).
+        bytes32 colBalancerPool;
+        /// @dev Balancer V2 poolId for WETH→loanToken (bytes32(0) → use V3 debtPool).
+        bytes32 debtBalancerPool;
+    }
+
     function receiveFlashLoan(
         IERC20[] memory tokens,
         uint[] memory amounts,
         uint[] memory feeAmounts,
         bytes memory data
     ) external override {
-        // ── Liquidation path ─────────────────────────────────────────────────
+        // ── AAVE V3 liquidation path (Balancer flash loan) ───────────────────
         if (_liquidationPending) {
             require(msg.sender == _liquidationVault, "not vault");
             _liquidationPending = false;
@@ -515,6 +722,20 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
             _executeLiquidationFlashLoan(
                 address(tokens[0]), amounts[0], feeAmounts[0], data
             );
+            return;
+        }
+
+        // ── Morpho Blue position liquidation path (Balancer flash loan) ──────
+        if (_morphoBlueLiqPending) {
+            require(msg.sender == _liquidationVault, "not vault");
+            _morphoBlueLiqPending = false;
+            address morpho    = _morphoBlueAddr;
+            address swapVault = _pendingSwapVault;
+            _liquidationVault = address(0);
+            _morphoBlueAddr   = address(0);
+            _pendingSwapVault = address(0);
+            MorphoBlueLiqParams memory p = abi.decode(data, (MorphoBlueLiqParams));
+            _executeMorphoBlueLiqCore(morpho, swapVault, p, amounts[0], feeAmounts[0]);
             return;
         }
 
@@ -681,6 +902,101 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
         IERC20(p.debtAsset).safeApprove(msg.sender, assets);
     }
 
+    // ── Morpho Blue position liquidation (Balancer flash loan) ─────────────────
+
+    /// @notice Flash-borrow `p.flashAmount` of `p.loanToken` from Balancer (0% fee),
+    ///         liquidate `p.borrower` on Morpho Blue, swap received collateral back
+    ///         to the loan token, then repay the flash loan.
+    ///         Surplus (liquidation incentive spread) stays in the contract;
+    ///         use recoverToken() to sweep profits.
+    ///
+    /// @param balancerVault  Balancer Vault address for the flash loan.
+    /// @param morphoBlue     Morpho Blue singleton address.
+    /// @param p              Liquidation parameters including pre-computed flash amount.
+    function triggerMorphoBlueLiquidation(
+        address balancerVault,
+        address morphoBlue,
+        MorphoBlueLiqParams calldata p
+    ) external {
+        require(msg.sender == owner, "not owner");
+        _morphoBlueLiqPending = true;
+        _morphoBlueAddr       = morphoBlue;
+        _liquidationVault     = balancerVault; // checked in receiveFlashLoan
+        _pendingSwapVault     = balancerVault; // swap legs use the same vault
+
+        IERC20[] memory tokens  = new IERC20[](1);
+        tokens[0]               = IERC20(p.loanToken);
+        uint256[] memory amounts = new uint256[](1);
+        amounts[0]              = p.flashAmount;
+
+        IBalancerVault(balancerVault).flashLoan(
+            IFlashLoanRecipient(address(this)),
+            tokens,
+            amounts,
+            abi.encode(p)
+        );
+    }
+
+    /// @dev Core execution for a Morpho Blue liquidation backed by a Balancer flash loan.
+    ///      Called from receiveFlashLoan when _morphoBlueLiqPending was set.
+    ///
+    ///   1. Approve Morpho Blue for the flash-borrowed debt amount.
+    ///   2. Call morpho.liquidate() — pay debt shares, receive collateral.
+    ///   3. Swap collateral → (WETH) → loanToken via V3 or Balancer.
+    ///   4. Repay Balancer flash loan (principal + fee, usually 0).
+    function _executeMorphoBlueLiqCore(
+        address morpho,
+        address swapVault,
+        MorphoBlueLiqParams memory p,
+        uint256 debtAmount,
+        uint256 feeAmount
+    ) internal {
+        // Build MarketParams struct for the liquidate() call
+        IMorpho.MarketParams memory mp = IMorpho.MarketParams({
+            loanToken:       p.loanToken,
+            collateralToken: p.collateralToken,
+            oracle:          p.oracle,
+            irm:             p.irm,
+            lltv:            p.lltv
+        });
+
+        // 1. Approve Morpho to pull the loan token (exact repaid amount)
+        IERC20(p.loanToken).safeApprove(morpho, 0);
+        IERC20(p.loanToken).safeApprove(morpho, debtAmount);
+
+        // 2. Liquidate: repay borrow shares → receive collateral
+        //    repaidShares set by caller; seizedAssets = 0 → Morpho computes amount.
+        IMorpho(morpho).liquidate(mp, p.borrower, 0, p.repaidShares, "");
+
+        // Clear any residual approval
+        IERC20(p.loanToken).safeApprove(morpho, 0);
+
+        // 3. Swap collateral → (WETH) → loanToken
+        address weth = address(mainCurrency);
+        if (p.collateralToken != p.loanToken) {
+            uint256 colBal = IERC20(p.collateralToken).balanceOf(address(this));
+
+            if (p.collateralToken != weth) {
+                if (p.colBalancerPool != bytes32(0) && swapVault != address(0)) {
+                    colBal = _swapBalancer(swapVault, p.colBalancerPool, p.collateralToken, weth, colBal);
+                } else if (p.collateralPool != address(0)) {
+                    colBal = _swapUniswapV3Pool(p.collateralPool, p.collateralToken, weth, colBal);
+                }
+            }
+
+            if (p.loanToken != weth) {
+                if (p.debtBalancerPool != bytes32(0) && swapVault != address(0)) {
+                    _swapBalancer(swapVault, p.debtBalancerPool, weth, p.loanToken, colBal);
+                } else if (p.debtPool != address(0)) {
+                    _swapUniswapV3Pool(p.debtPool, weth, p.loanToken, colBal);
+                }
+            }
+        }
+
+        // 4. Repay Balancer flash loan (fee is 0% on Base)
+        IERC20(p.loanToken).safeTransfer(msg.sender, debtAmount + feeAmount);
+    }
+
     // ── AAVE V3 flash-loan-backed liquidation (last-resort, 0.05% fee) ────────
 
     /// @notice Flash-borrow `p.debtToCover` of `p.debtAsset` from AAVE V3
@@ -822,13 +1138,37 @@ contract V2ArbBot is IFlashLoanRecipient, IUniswapV2Callee, IFlashLoanSimpleRece
             IERC20(asset).safeApprove(msg.sender, 0);
             IERC20(asset).safeApprove(msg.sender, repayAmount);
         } else {
-            // ── Arb path (existing behaviour) ────────────────────────────────
-            _execute(params);
+            // ── Arb path: decode SwapParams and execute ──────────────────────
+            // params = abi.encode(SwapParams arb) passed from executeArbitrage().
+            SwapParams memory arb = abi.decode(params, (SwapParams));
+            uint256 amountOut = _executeSwapPath(arb, asset, amount);
+            require(amountOut >= repayAmount, "arb: repay insufficient");
 
             IERC20(asset).safeApprove(msg.sender, 0);
             IERC20(asset).safeApprove(msg.sender, repayAmount);
         }
         return true;
+    }
+
+    function uniswapV3FlashCallback(
+        uint256 fee0,
+        uint256 fee1,
+        bytes calldata data
+    ) external override {
+        (SwapParams memory arb, address flashPool, address startToken) =
+            abi.decode(data, (SwapParams, address, address));
+
+        require(msg.sender == flashPool, "not flash pool");
+        require(
+            flashPool == uniV3FlashPool || flashPool == pancakeV3FlashPool,
+            "unauthorized flash pool"
+        );
+
+        uint256 amountOut = _executeSwapPath(arb, startToken, arb.amountIn);
+        uint256 repayAmount = arb.amountIn + fee0 + fee1;
+        require(amountOut >= repayAmount, "arb: repay insufficient");
+
+        IERC20(startToken).safeTransfer(flashPool, repayAmount);
     }
 
     function uniswapV2Call(

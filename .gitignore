@@ -16,3 +16,4 @@ contracts/cache
 cache/avax/opportunities.log
 scripts/memepool.js
 .claude
+bot
